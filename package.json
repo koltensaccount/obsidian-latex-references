@@ -1,0 +1,17 @@
+{
+  "name": "obsidian-latex-references-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Obsidian LaTeX homework editor, compiler, and reference publisher.",
+  "scripts": {
+    "test:core": "node --test reference-core/tests/*.test.cjs",
+    "test:latex": "./latex/tests/run_tests.sh",
+    "test:e2e": "node --test tests/e2e_prototype.test.cjs",
+    "test:isolation": "node --test tests/isolation_verification.test.cjs",
+    "test:homework": "node --test tests/homework_compatibility.test.cjs",
+    "test": "npm run test:core && npm run test:latex && npm run test:isolation && npm run test:e2e && npm run test:homework",
+    "build:plugin": "cd obsidian-plugin && npm run build",
+    "build": "npm run build:plugin"
+  },
+  "license": "MIT"
+}

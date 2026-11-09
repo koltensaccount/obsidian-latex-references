@@ -1,0 +1,215 @@
+/* ==========================================================================
+   LaTeX References Obsidian Plugin Styles
+   ========================================================================== */
+
+/* Editor View */
+.latex-references-editor-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.latex-references-editor-view .cm-editor {
+  height: 100%;
+  font-family: var(--font-monospace, monospace);
+  font-size: var(--editor-font-size, 14px);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+/* PDF Preview Leaf */
+.latex-pdf-preview-view {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-secondary);
+}
+
+.latex-pdf-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.latex-pdf-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 2rem;
+  text-align: center;
+}
+
+/* Suggestion Item (Matching Callout Links UI) */
+.cl-suggestion-item {
+  padding: 0.6rem 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cl-suggestion-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.cl-suggestion-title {
+  font-weight: 600;
+  color: var(--text-normal);
+  font-size: 0.95rem;
+}
+
+.cl-type-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.cl-badge-definition {
+  background: rgba(30, 144, 255, 0.2);
+  color: #1e90ff;
+  border: 1px solid rgba(30, 144, 255, 0.4);
+}
+
+.cl-badge-theorem {
+  background: rgba(220, 20, 60, 0.2);
+  color: #dc143c;
+  border: 1px solid rgba(220, 20, 60, 0.4);
+}
+
+.cl-badge-lemma, .cl-badge-proposition {
+  background: rgba(255, 140, 0, 0.2);
+  color: #ff8c00;
+  border: 1px solid rgba(255, 140, 0, 0.4);
+}
+
+.cl-badge-corollary {
+  background: rgba(147, 112, 219, 0.2);
+  color: #9370db;
+  border: 1px solid rgba(147, 112, 219, 0.4);
+}
+
+.cl-badge-formula {
+  background: rgba(46, 139, 87, 0.2);
+  color: #2e8b57;
+  border: 1px solid rgba(46, 139, 87, 0.4);
+}
+
+.cl-badge-remark, .cl-badge-axiom, .cl-badge-conjecture, .cl-badge-notation {
+  background: rgba(128, 128, 128, 0.2);
+  color: #888888;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+}
+
+.cl-fold-badge {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.cl-id-badge {
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--text-accent);
+  background: var(--background-secondary);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.cl-suggestion-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  margin-bottom: 0.25rem;
+}
+
+.cl-suggestion-path {
+  font-family: var(--font-monospace, monospace);
+}
+
+.latex-ref-badge-pub {
+  color: var(--text-success, #48c774);
+  font-weight: 600;
+  font-size: 0.65rem;
+}
+
+.latex-ref-badge-unpub {
+  color: var(--text-warning, #ffdd57);
+  font-weight: 600;
+  font-size: 0.65rem;
+}
+
+.cl-suggestion-preview {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
+
+/* Approval Modal */
+.latex-ref-approval-modal {
+  padding: 1rem;
+}
+
+.latex-ref-status-banner {
+  margin: 0.5rem 0 1rem 0;
+}
+
+.latex-ref-status-approved {
+  background: rgba(72, 199, 116, 0.15);
+  color: var(--text-success, #48c774);
+  border: 1px solid rgba(72, 199, 116, 0.3);
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.latex-ref-status-draft {
+  background: rgba(255, 221, 87, 0.15);
+  color: var(--text-warning, #ffdd57);
+  border: 1px solid rgba(255, 221, 87, 0.3);
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.latex-ref-info-box {
+  background: var(--background-secondary);
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.latex-ref-body-preview {
+  background: var(--background-primary-alt);
+  padding: 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.latex-ref-approval-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 1rem;
+}

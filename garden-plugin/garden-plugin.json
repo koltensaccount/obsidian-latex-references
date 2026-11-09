@@ -1,0 +1,17 @@
+{
+  "id": "latex-references",
+  "name": "LaTeX References",
+  "version": "1.0.0",
+  "description": "Publishes standalone, unlisted mathematical reference pages for compiled LaTeX PDFs.",
+  "author": "Kolten Bendickson",
+  "hooks": "index.js",
+  "settings": [
+    {
+      "key": "manifestPath",
+      "type": "string",
+      "default": "src/site/_data/latexReferences.json",
+      "label": "Manifest Path",
+      "description": "Path to the approved references manifest relative to site root."
+    }
+  ]
+}

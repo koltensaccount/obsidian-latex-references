@@ -1,0 +1,11 @@
+{
+  "name": "reference-core",
+  "version": "1.0.0",
+  "description": "Zero-dependency mathematical callout scanning, stable identity resolution, and manifest logic.",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs"
+  },
+  "license": "MIT"
+}

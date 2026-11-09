@@ -1,0 +1,68 @@
+% ====================================================================
+% gardenref.sty
+% Standalone LaTeX reference resolution package for Obsidian Digital Garden
+% Part of https://github.com/koltensaccount/obsidian-latex-references
+% ====================================================================
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{gardenref}[2026/11/09 v1.0.0 LaTeX References for Obsidian Digital Garden]
+
+\RequirePackage{kvoptions}
+\RequirePackage{etoolbox}
+
+\SetupKeyvalOptions{
+  family=gardenref,
+  prefix=gardenref@
+}
+
+\DeclareStringOption[https://obsidian.koltensserver.com]{baseurl}
+\DeclareBoolOption[false]{draft}
+\DeclareBoolOption[true]{colored}
+\DeclareStringOption[blue]{linkcolor}
+\ProcessKeyvalOptions*
+
+% Set default target base URL
+\newcommand{\setgardenrefbase}[1]{%
+  \def\gardenref@baseurl{#1}%
+}
+
+% Table of published references: \gardenref@target@<id>
+\newcommand{\declaregardenref}[2]{%
+  \csgdef{gardenref@target@#1}{#2}%
+}
+
+% Hyperlink configuration
+\ifgardenref@draft
+  % In draft mode, render plain text without links
+  \newcommand{\gardenref}[2]{#2}
+\else
+  % Load hyperref safely if not already present
+  \@ifpackageloaded{hyperref}{}{%
+    \ifgardenref@colored
+      \RequirePackage[colorlinks=true, urlcolor=\gardenref@linkcolor, linkcolor=\gardenref@linkcolor]{hyperref}%
+    \else
+      \RequirePackage{hyperref}%
+    \fi
+  }
+
+  % Load local manifest file if present
+  % 1. Try job-specific: <jobname>.gardenrefs.tex
+  % 2. Try document-level: gardenrefs.tex
+  \InputIfFileExists{\jobname.gardenrefs.tex}{}{%
+    \InputIfFileExists{gardenrefs.tex}{}{}%
+  }
+
+  % Primary command: \gardenref{reference-id}{visible text}
+  \newcommand{\gardenref}[2]{%
+    \ifcsvoid{gardenref@target@#1}{%
+      % Unpublished or missing target: warn and render plain text safely
+      \PackageWarning{gardenref}{Reference target '#1' is unpublished or missing from manifest. Rendering plain text.}%
+      #2%
+    }{%
+      % Published target: render clickable hyperlink
+      \href{\csuse{gardenref@target@#1}}{#2}%
+    }%
+  }
+\fi
+
+\endinput

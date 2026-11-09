@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-latex-references",
+  "name": "LaTeX References",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Write LaTeX homework, compile PDFs with live diagnostics & preview, and link mathematical definitions to Digital Garden.",
+  "author": "Kolten Bendickson",
+  "isDesktopOnly": true
+}

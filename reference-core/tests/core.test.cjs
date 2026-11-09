@@ -1,0 +1,168 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const core = require('../src/index.js');
+
+test('indexes mathematical callouts and extracts titles, types, folds, and bodies', () => {
+  const markdown = `
+# Lecture Notes
+
+> [!definition] Group
+> A set $G$ together with a binary operation $*$ satisfying:
+> 1. Associativity
+> 2. Identity
+> 3. Inverses
+^def-group
+
+> [!theorem]+ Lagrange's Theorem
+> If $H$ is a subgroup of a finite group $G$, then $|H|$ divides $|G|$.
+
+> [!note] Ordinary Note
+> This should not be indexed as a mathematical environment.
+`;
+
+  const envs = core.scanEnvironments(markdown, 'Notes/Algebra.md');
+  assert.equal(envs.length, 2);
+
+  assert.equal(envs[0].type, 'definition');
+  assert.equal(envs[0].title, 'Group');
+  assert.equal(envs[0].id, 'def-group');
+  assert.match(envs[0].body, /Associativity/);
+
+  assert.equal(envs[1].type, 'theorem');
+  assert.equal(envs[1].title, "Lagrange's Theorem");
+  assert.equal(envs[1].fold, '+');
+  assert.equal(envs[1].id, null);
+  assert.match(envs[1].body, /divides \$\|G\|\$/);
+});
+
+test('recognizes all 10 mathematical environment types', () => {
+  const types = [
+    'definition', 'formula', 'theorem', 'proposition', 'lemma',
+    'corollary', 'remark', 'axiom', 'conjecture', 'notation'
+  ];
+  for (const t of types) {
+    const text = `> [!${t}] Sample Title\n> Sample body text.`;
+    const envs = core.scanEnvironments(text);
+    assert.equal(envs.length, 1);
+    assert.equal(envs[0].type, t);
+    assert.equal(envs[0].title, 'Sample Title');
+  }
+});
+
+test('slugifies LaTeX math and special characters cleanly in candidate IDs', () => {
+  assert.equal(core.slugify('Group Homomorphism'), 'group-homomorphism');
+  assert.equal(core.slugify('First Isomorphism Theorem ($G/\\ker\\varphi \\cong \\text{im}\\varphi$)'), 'first-isomorphism-theorem-g-im');
+  assert.equal(core.slugify('Bézout\'s Identity'), 'bezout-s-identity');
+});
+
+test('uniqueId avoids existing IDs in text and reserved list', () => {
+  const text = `
+> [!definition] Homomorphism
+> Text
+^def-homomorphism
+
+> [!definition] Homomorphism
+> Second one
+`;
+  const envs = core.scanEnvironments(text);
+  assert.equal(envs[0].id, 'def-homomorphism');
+
+  const newId = core.uniqueId(envs[1], text, ['def-homomorphism']);
+  assert.equal(newId, 'def-homomorphism-2');
+});
+
+test('ensureBlockId adds block ID surgically without modifying surrounding text', () => {
+  const text = `Before content\n\n> [!theorem] Fermat's Little Theorem\n> $a^p \\equiv a \\pmod p$.\n\nAfter content`;
+  const envs = core.scanEnvironments(text);
+  assert.equal(envs[0].id, null);
+
+  const res = core.ensureBlockId(text, envs[0]);
+  assert.match(res.id, /^thm-fermat-s-little-theorem/);
+  assert.match(res.text, new RegExp(`\\^${res.id}`));
+  assert.match(res.text, /^Before content/);
+  assert.match(res.text, /After content$/);
+
+  // Idempotent when already present
+  const res2 = core.ensureBlockId(res.text, { ...envs[0], id: res.id });
+  assert.equal(res2.id, res.id);
+  assert.equal(res2.text, res.text);
+  assert.equal(res2.insertionOffset, null);
+});
+
+test('buildLatexRefCommand creates valid \\gardenref command', () => {
+  const cmd = core.buildLatexRefCommand('def-group-homomorphism', 'homomorphism');
+  assert.equal(cmd, '\\gardenref{def-group-homomorphism}{homomorphism}');
+
+  const cmdWithMath = core.buildLatexRefCommand('def-group-homomorphism', '$\\varphi$ is a homomorphism');
+  assert.equal(cmdWithMath, '\\gardenref{def-group-homomorphism}{$\\varphi$ is a homomorphism}');
+});
+
+test('manifest lifecycle: approve, check, drift detection, and unpublish', () => {
+  const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  assert.equal(core.isApproved(manifest, 'def-test'), false);
+
+  const item = {
+    id: 'def-group-homomorphism',
+    type: 'definition',
+    title: 'Group Homomorphism',
+    body: 'A map $\\varphi: G \\to G\'$ is a homomorphism if $\\varphi(ab) = \\varphi(a)\\varphi(b)$.',
+    filePath: 'School/MATH4281.md'
+  };
+
+  const { manifest: m1, snapshot } = core.approveSnapshot(manifest, item);
+  assert.equal(core.isApproved(m1, 'def-group-homomorphism'), true);
+  assert.equal(snapshot.url, 'https://obsidian.koltensserver.com/latex-references/def-group-homomorphism/');
+  assert.ok(snapshot.contentHash);
+
+  // Drift detection
+  assert.equal(core.detectDrift(snapshot, item), false);
+  const modifiedItem = { ...item, body: 'A modified definition body.' };
+  assert.equal(core.detectDrift(snapshot, modifiedItem), true);
+
+  // Export to TeX
+  const texDef = core.exportGardenrefsTex(m1);
+  assert.match(texDef, /\\declaregardenref\{def-group-homomorphism\}\{https:\/\/obsidian\.koltensserver\.com\/latex-references\/def-group-homomorphism\/\}/);
+
+  // Unpublish
+  const { manifest: m2, removed } = core.unpublishSnapshot(m1, 'def-group-homomorphism');
+  assert.equal(removed, true);
+  assert.equal(core.isApproved(m2, 'def-group-homomorphism'), false);
+});
+
+test('parses real vault excerpt: MATH4281 Exam 1 Cheat Sheet Group Homomorphism', () => {
+  const realExcerpt = `
+# 2. Homomorphisms and Isomorphisms
+
+## Group Homomorphism Definition
+
+> [!definition] Group Homomorphism
+> A map
+> 
+> $$
+> \\varphi:G\\to G'
+> $$
+> 
+> between groups $(G,\\cdot)$ and $(G',\\ast)$ is a **homomorphism** if
+> 
+> $$
+> \\varphi(ab)
+> =
+> \\varphi(a)\\ast\\varphi(b)
+> $$
+> 
+> for all $a,b\\in G$.
+
+^def-group-homomorphism
+
+---
+`;
+
+  const envs = core.scanEnvironments(realExcerpt, 'School/Fall 2026/Introduction to Modern Algebra/Notebooks/MATH4281 Exam 1 Cheat Sheet.md');
+  assert.equal(envs.length, 1);
+  assert.equal(envs[0].type, 'definition');
+  assert.equal(envs[0].title, 'Group Homomorphism');
+  assert.equal(envs[0].id, 'def-group-homomorphism');
+  assert.match(envs[0].body, /\\varphi:G\\to G'/);
+});
