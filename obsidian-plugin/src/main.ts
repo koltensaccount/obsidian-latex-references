@@ -1,3 +1,4 @@
+import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { FileSystemAdapter, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
@@ -12,12 +13,16 @@ import type { CompileResult, LatexReferencesSettings } from "./types";
 import {
   createEmptyManifest,
   exportGardenrefsTex,
+  updateReferenceStatus,
+  getSnapshot,
+  verifyLiveReference,
+  REFERENCE_STATUS,
   type ReferencesManifest
 } from "../../reference-core/src/index";
 
 export default class LatexReferencesPlugin extends Plugin {
   settings: LatexReferencesSettings = DEFAULT_SETTINGS;
-  manifest: ReferencesManifest = createEmptyManifest();
+  referencesManifest: ReferencesManifest = createEmptyManifest();
   vaultIndexer!: VaultCalloutIndexer;
 
   private compiling = new Set<string>();
@@ -26,15 +31,35 @@ export default class LatexReferencesPlugin extends Plugin {
   private latestPdfPath: string | null = null;
   private statusEl: HTMLElement | null = null;
 
+  getActiveLatexView(): LatexEditorView | null {
+    const leaf = this.app.workspace.activeLeaf;
+    if (leaf?.view && leaf.view.getViewType() === LATEX_VIEW_TYPE) {
+      return leaf.view as LatexEditorView;
+    }
+    return this.app.workspace.getActiveViewOfType(LatexEditorView);
+  }
+
   async onload(): Promise<void> {
     await this.loadSettings();
     await this.loadManifest();
 
     this.vaultIndexer = new VaultCalloutIndexer(this.app);
 
-    this.registerView(LATEX_VIEW_TYPE, (leaf) => new LatexEditorView(leaf, this));
-    this.registerView(PDF_VIEW_TYPE, (leaf) => new LatexPdfView(leaf));
-    this.registerExtensions(["tex", "sty", "cls"], LATEX_VIEW_TYPE);
+    try {
+      this.registerView(LATEX_VIEW_TYPE, (leaf) => new LatexEditorView(leaf, this));
+    } catch (e) {
+      // View type already registered
+    }
+    try {
+      this.registerView(PDF_VIEW_TYPE, (leaf) => new LatexPdfView(leaf));
+    } catch (e) {
+      // View type already registered
+    }
+    try {
+      this.registerExtensions(["tex", "sty", "cls"], LATEX_VIEW_TYPE);
+    } catch (e) {
+      // Extensions already registered
+    }
 
     this.addSettingTab(new LatexReferencesSettingTab(this.app, this));
 
@@ -47,7 +72,7 @@ export default class LatexReferencesPlugin extends Plugin {
       id: "compile-active-latex",
       name: "Compile active LaTeX document",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(LatexEditorView);
+        const view = this.getActiveLatexView();
         if (!view) return false;
         if (!checking) void this.compileView(view);
         return true;
@@ -64,7 +89,7 @@ export default class LatexReferencesPlugin extends Plugin {
       id: "insert-latex-reference",
       name: "Insert LaTeX callout reference",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(LatexEditorView);
+        const view = this.getActiveLatexView();
         if (!view || !view.editor) return false;
         if (!checking) this.triggerReferencePicker(view, view.editor);
         return true;
@@ -104,9 +129,9 @@ export default class LatexReferencesPlugin extends Plugin {
   async loadManifest(): Promise<void> {
     const data = await this.loadData();
     if (data && data.referencesManifest) {
-      this.manifest = data.referencesManifest;
+      this.referencesManifest = data.referencesManifest;
     } else {
-      this.manifest = createEmptyManifest(this.settings.baseUrl);
+      this.referencesManifest = createEmptyManifest(this.settings.baseUrl);
     }
   }
 
@@ -118,7 +143,7 @@ export default class LatexReferencesPlugin extends Plugin {
   private async persistData(): Promise<void> {
     await this.saveData({
       settings: this.settings,
-      referencesManifest: this.manifest
+      referencesManifest: this.referencesManifest
     });
   }
 
@@ -131,9 +156,75 @@ export default class LatexReferencesPlugin extends Plugin {
 
     try {
       await fs.mkdir(path.dirname(targetFile), { recursive: true });
-      await fs.writeFile(targetFile, JSON.stringify(this.manifest, null, 2), "utf8");
+      await fs.writeFile(targetFile, JSON.stringify(this.referencesManifest, null, 2), "utf8");
     } catch (e) {
       console.warn("Could not sync manifest to Digital Garden repository:", e);
+    }
+  }
+
+  async deployManifestToDigitalGarden(commitMessage = "chore(references): sync published latex reference snapshots"): Promise<{ ok: boolean; message: string }> {
+    const repoPath = this.settings.digitalGardenRepoPath;
+    if (!repoPath) {
+      return { ok: false, message: "Digital Garden repository path is not configured in settings." };
+    }
+
+    try {
+      await this.syncManifestToDigitalGarden();
+
+      const manifestRelative = this.settings.gardenManifestRelativePath || "src/site/_data/latexReferences.json";
+      const gitCmd = `git add "${manifestRelative}" && git commit -m "${commitMessage}" && git push origin main`;
+
+      await new Promise<void>((resolve, reject) => {
+        exec(gitCmd, { cwd: repoPath }, (err, stdout, stderr) => {
+          if (err) {
+            if (stdout.includes("nothing to commit") || stderr.includes("nothing to commit")) {
+              resolve();
+              return;
+            }
+            reject(new Error(stderr || stdout || err.message));
+            return;
+          }
+          resolve();
+        });
+      });
+
+      // Update statuses of approved references to awaiting_deploy
+      for (const id of Object.keys(this.referencesManifest.references)) {
+        const ref = this.referencesManifest.references[id];
+        if (ref.status === REFERENCE_STATUS.APPROVED_LOCAL || ref.status === REFERENCE_STATUS.DEPLOY_FAILED) {
+          this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.AWAITING_DEPLOY).manifest;
+        }
+      }
+      await this.persistData();
+
+      return { ok: true, message: "Pushed changes to Digital Garden repository. Vercel build triggered." };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async checkReferenceLiveStatus(id: string): Promise<{ live: boolean; status: number; message: string }> {
+    const snapshot = getSnapshot(this.referencesManifest, id);
+    if (!snapshot) {
+      return { live: false, status: 0, message: "Reference snapshot not found in manifest." };
+    }
+
+    const res = await verifyLiveReference(snapshot.url, snapshot.title);
+    if (res.ok) {
+      this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.PUBLISHED, {
+        publishedAt: new Date().toISOString()
+      }).manifest;
+      await this.persistData();
+      return { live: true, status: res.status, message: `Reference is live at ${snapshot.url}` };
+    } else {
+      if (snapshot.status === REFERENCE_STATUS.AWAITING_DEPLOY) {
+        return { live: false, status: res.status, message: `Still awaiting deployment (${res.error})` };
+      }
+      this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.DEPLOY_FAILED, {
+        verificationError: res.error
+      }).manifest;
+      await this.persistData();
+      return { live: false, status: res.status, message: `Verification failed: ${res.error}` };
     }
   }
 
@@ -153,7 +244,7 @@ export default class LatexReferencesPlugin extends Plugin {
   }
 
   async compileActive(): Promise<void> {
-    const view = this.app.workspace.getActiveViewOfType(LatexEditorView);
+    const view = this.getActiveLatexView();
     if (!view) {
       new Notice("Open a .tex document first.");
       return;
@@ -187,11 +278,12 @@ export default class LatexReferencesPlugin extends Plugin {
     this.setStatus(`Compiling ${file.name}…`);
     if (!quiet) new Notice(`Compiling ${file.name}…`);
 
-    const texContent = exportGardenrefsTex(this.manifest);
+    const texContent = exportGardenrefsTex(this.referencesManifest);
     const fullPath = adapter.getFullPath(file.path);
+    const pluginDir = path.join(adapter.getBasePath(), ".obsidian/plugins/obsidian-latex-references");
 
     try {
-      const result = await compileLatex(fullPath, this.settings, texContent);
+      const result = await compileLatex(fullPath, this.settings, texContent, pluginDir);
       await this.reportResult(result, view, adapter, quiet);
       if (result.ok) {
         this.lastCompiledSource.set(file.path, source);
@@ -221,7 +313,7 @@ export default class LatexReferencesPlugin extends Plugin {
     this.setStatus(`Compiled in ${result.durationMs}ms`);
     if (!quiet) new Notice(`Compiled ${path.basename(result.pdfPath)} in ${result.durationMs}ms.`);
 
-    const relativePdf = adapter.getRelativePath(result.pdfPath);
+    const relativePdf = path.relative(adapter.getBasePath(), result.pdfPath);
     this.latestPdfPath = relativePdf;
 
     if (this.settings.openPdfAfterCompile) {

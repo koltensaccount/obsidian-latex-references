@@ -70,7 +70,7 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
     const metaRow = el.createDiv({ cls: "cl-suggestion-meta" });
     metaRow.createSpan({ text: item.filePath, cls: "cl-suggestion-path" });
 
-    const published = isApproved(this.plugin.manifest, item.id || "");
+    const published = isApproved(this.plugin.referencesManifest, item.id || "");
     const pubBadge = metaRow.createSpan({
       cls: published ? "latex-ref-badge-pub" : "latex-ref-badge-unpub",
       text: published ? "PUBLISHED" : "UNPUBLISHED"
@@ -128,7 +128,7 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
       this.editorView.focus();
 
       // 3. Check publishing status
-      const published = isApproved(this.plugin.manifest, targetId);
+      const published = isApproved(this.plugin.referencesManifest, targetId);
       if (!published) {
         new Notice(`Inserted reference ^${targetId}. It is currently unpublished.`, 5000);
         // Prompt user to approve snapshot if desired

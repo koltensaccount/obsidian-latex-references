@@ -91,12 +91,102 @@ test('ensureBlockId adds block ID surgically without modifying surrounding text'
   assert.equal(res2.insertionOffset, null);
 });
 
-test('buildLatexRefCommand creates valid \\gardenref command', () => {
+test('buildLatexRefCommand creates valid \\gardenref command and sanitizes special characters', () => {
   const cmd = core.buildLatexRefCommand('def-group-homomorphism', 'homomorphism');
   assert.equal(cmd, '\\gardenref{def-group-homomorphism}{homomorphism}');
 
   const cmdWithMath = core.buildLatexRefCommand('def-group-homomorphism', '$\\varphi$ is a homomorphism');
   assert.equal(cmdWithMath, '\\gardenref{def-group-homomorphism}{$\\varphi$ is a homomorphism}');
+
+  // Escaping unescaped % and #
+  const cmdWithPercent = core.buildLatexRefCommand('def-group-homomorphism', '50% accuracy on problem #1');
+  assert.equal(cmdWithPercent, '\\gardenref{def-group-homomorphism}{50\\% accuracy on problem \\#1}');
+
+  // Idempotent escaping when already escaped
+  const cmdAlreadyEscaped = core.buildLatexRefCommand('def-group-homomorphism', '50\\% and \\#1');
+  assert.equal(cmdAlreadyEscaped, '\\gardenref{def-group-homomorphism}{50\\% and \\#1}');
+
+  // Multi-line selection trimmed
+  const cmdMultiline = core.buildLatexRefCommand('def-group-homomorphism', '  homomorphism\n  mapping  ');
+  assert.equal(cmdMultiline, '\\gardenref{def-group-homomorphism}{homomorphism mapping}');
+});
+
+test('manifest 5-state publishing lifecycle and status transitions', () => {
+  const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const item = {
+    id: 'def-group-homomorphism',
+    type: 'definition',
+    title: 'Group Homomorphism',
+    body: 'A map $\\varphi: G \\to G\'$ is a homomorphism.',
+    filePath: 'School/MATH4281.md'
+  };
+
+  // 1. Initial local approval
+  const { manifest: m1, snapshot: s1 } = core.approveSnapshot(manifest, item);
+  assert.equal(s1.status, core.REFERENCE_STATUS.APPROVED_LOCAL);
+  assert.equal(s1.publishedAt, null);
+
+  // 2. Transition to awaiting deployment (git commit/push in progress)
+  const { manifest: m2, snapshot: s2 } = core.updateReferenceStatus(m1, item.id, core.REFERENCE_STATUS.AWAITING_DEPLOY);
+  assert.equal(s2.status, core.REFERENCE_STATUS.AWAITING_DEPLOY);
+
+  // 3. Deployment failure
+  const { manifest: m3, snapshot: s3 } = core.updateReferenceStatus(m2, item.id, core.REFERENCE_STATUS.DEPLOY_FAILED, {
+    verificationError: 'HTTP 404 Not Found'
+  });
+  assert.equal(s3.status, core.REFERENCE_STATUS.DEPLOY_FAILED);
+  assert.equal(s3.verificationError, 'HTTP 404 Not Found');
+
+  // 4. Successful publication
+  const { manifest: m4, snapshot: s4 } = core.updateReferenceStatus(m3, item.id, core.REFERENCE_STATUS.PUBLISHED, {
+    publishedAt: new Date().toISOString()
+  });
+  assert.equal(s4.status, core.REFERENCE_STATUS.PUBLISHED);
+  assert.ok(s4.publishedAt);
+});
+
+test('stable identity collision detection vs renamed/moved note handling', () => {
+  const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const itemA = {
+    id: 'def-normal',
+    type: 'definition',
+    title: 'Normal Subgroup',
+    body: 'A subgroup $N$ is normal in $G$ if $gNg^{-1} = N$.',
+    filePath: 'Algebra/Groups.md'
+  };
+
+  const { manifest: m1, snapshot: s1 } = core.approveSnapshot(manifest, itemA);
+  assert.equal(s1.title, 'Normal Subgroup');
+
+  // Renamed or moved file with same definition: Allowed and updates sourceFile
+  const itemMoved = {
+    id: 'def-normal',
+    type: 'definition',
+    title: 'Normal Subgroup',
+    body: 'A subgroup $N$ is normal in $G$ if $gNg^{-1} = N$.',
+    filePath: 'Modern Algebra/Advanced/Groups.md'
+  };
+  const { manifest: mMoved, snapshot: sMoved } = core.approveSnapshot(m1, itemMoved);
+  assert.equal(sMoved.sourceFile, 'Modern Algebra/Advanced/Groups.md');
+  assert.equal(sMoved.approvedAt, s1.approvedAt); // Preserves original approval timestamp
+
+  // Accidental collision from completely different note and definition: Rejects silent overwrite
+  const itemCollision = {
+    id: 'def-normal',
+    type: 'definition',
+    title: 'Normal Topological Space',
+    body: 'A topological space $X$ is normal if disjoint closed sets can be separated.',
+    filePath: 'Topology/Spaces.md'
+  };
+
+  assert.throws(() => {
+    core.approveSnapshot(m1, itemCollision);
+  }, /Reference ID collision/);
+
+  // Frozen snapshot preservation: original snapshot remains intact despite attempted collision
+  const preserved = core.getSnapshot(m1, 'def-normal');
+  assert.equal(preserved.title, 'Normal Subgroup');
+  assert.equal(preserved.sourceFile, 'Algebra/Groups.md');
 });
 
 test('manifest lifecycle: approve, check, drift detection, and unpublish', () => {

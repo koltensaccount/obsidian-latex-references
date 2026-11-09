@@ -141,3 +141,79 @@ This is broken \\undefinedcommandhere
 
   fs.rmSync(TEST_DIR, { recursive: true, force: true });
 });
+
+test('Independence 5: Collision detection between different notes sharing identical candidate or block IDs', () => {
+  const note1 = `
+> [!definition] Normal Subgroup
+> A subgroup $N$ of $G$ is normal if $gNg^{-1} = N$.
+^def-normal
+`;
+  const note2 = `
+> [!definition] Normal Topological Space
+> A topological space $X$ is normal if disjoint closed subsets can be separated.
+^def-normal
+`;
+
+  const env1 = core.scanEnvironments(note1, 'Algebra/Groups.md')[0];
+  const env2 = core.scanEnvironments(note2, 'Topology/Spaces.md')[0];
+
+  let manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const { manifest: m1 } = core.approveSnapshot(manifest, env1);
+  assert.equal(core.isApproved(m1, 'def-normal'), true);
+
+  // Attempting to silently overwrite with env2 from a different note must fail with collision error
+  assert.throws(() => {
+    core.approveSnapshot(m1, env2);
+  }, /Reference ID collision/);
+
+  // When candidate IDs match, uniqueId disambiguates against reserved IDs
+  const envDuplicateTitle = { type: 'definition', title: 'Normal', rawTitle: 'Normal' };
+  const reserved = ['def-normal'];
+  const safeId = core.uniqueId(envDuplicateTitle, '', reserved);
+  assert.equal(safeId, 'def-normal-2');
+});
+
+test('Independence 6: Edited definitions detect drift while preserving frozen snapshots for compiled PDFs', () => {
+  const initialNote = `
+> [!definition] Ring Homomorphism
+> A map $f: R \\to S$ preserving ring operations.
+^def-ring-homomorphism
+`;
+  const env = core.scanEnvironments(initialNote, 'Rings/Homomorphisms.md')[0];
+  let manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const { manifest: m1, snapshot: s1 } = core.approveSnapshot(manifest, env);
+
+  // User later edits the definition in the vault
+  const editedNote = `
+> [!definition] Ring Homomorphism
+> A map $f: R \\to S$ preserving addition, multiplication, and identity $f(1_R) = 1_S$.
+^def-ring-homomorphism
+`;
+  const editedEnv = core.scanEnvironments(editedNote, 'Rings/Homomorphisms.md')[0];
+
+  // Drift is detected
+  const hasDrift = core.detectDrift(s1, editedEnv);
+  assert.equal(hasDrift, true, 'Drift must be detected when vault content changes');
+
+  // But existing snapshot in manifest remains completely frozen until explicitly re-approved
+  const storedSnapshot = core.getSnapshot(m1, 'def-ring-homomorphism');
+  assert.equal(storedSnapshot.body, 'A map $f: R \\to S$ preserving ring operations.');
+  assert.equal(storedSnapshot.contentHash, s1.contentHash);
+});
+
+test('Independence 7: Deleted targets in vault preserve frozen manifest snapshots and offline TeX compilation', () => {
+  let manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const env = {
+    id: 'thm-spectral-theorem',
+    type: 'theorem',
+    title: 'Spectral Theorem',
+    body: 'Every symmetric matrix is orthogonally diagonalizable.',
+    filePath: 'LinearAlgebra/Spectral.md'
+  };
+  const { manifest: m1 } = core.approveSnapshot(manifest, env);
+
+  // Target file is deleted from vault (indexer would not find it), but manifest preserves it
+  assert.equal(core.isApproved(m1, 'thm-spectral-theorem'), true);
+  const texDef = core.exportGardenrefsTex(m1);
+  assert.match(texDef, /\\declaregardenref\{thm-spectral-theorem\}/);
+});

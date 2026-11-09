@@ -12,7 +12,7 @@ module.exports = {
 
   setupEleventy(eleventyConfig, context) {
     const pluginDir = context.pluginDir || __dirname;
-    const manifestPath = (context.settings && context.settings.manifestPath) || 'src/site/_data/latexReferences.json';
+    const manifestPath = process.env.LATEX_REFERENCES_MANIFEST_PATH || (context.settings && context.settings.manifestPath) || 'src/site/_data/latexReferences.json';
     const templatePath = path.join(pluginDir, 'templates/reference-page.njk');
 
     eleventyConfig.addFilter('renderLatexRefMarkdown', function (content) {

@@ -107,12 +107,24 @@ function ensureBlockId(text, original, reservedIds = []) {
   };
 }
 
+function sanitizeLatexRefText(text) {
+  if (typeof text !== 'string') return '';
+  // Collapse whitespace/newlines cleanly while preserving inner text
+  let cleaned = text.replace(/\s+/g, ' ').trim();
+  // Escape unescaped % (not preceded by \) so it does not comment out TeX braces
+  cleaned = cleaned.replace(/(?<!\\)%/g, '\\%');
+  // Escape unescaped # (not preceded by \) so it does not trigger macro parameter errors
+  cleaned = cleaned.replace(/(?<!\\)#/g, '\\#');
+  return cleaned;
+}
+
 function buildLatexRefCommand(id, selectedText, macroName = 'gardenref') {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) {
     throw new Error(`Invalid reference ID: "${id}"`);
   }
-  const text = (selectedText !== undefined && selectedText !== null) ? selectedText : id;
-  return `\\${macroName}{${id}}{${text}}`;
+  const rawText = (selectedText !== undefined && selectedText !== null && selectedText !== '') ? selectedText : id;
+  const safeText = sanitizeLatexRefText(rawText);
+  return `\\${macroName}{${id}}{${safeText}}`;
 }
 
 module.exports = {
@@ -121,5 +133,6 @@ module.exports = {
   uniqueId,
   findSameEnvironment,
   ensureBlockId,
+  sanitizeLatexRefText,
   buildLatexRefCommand
 };

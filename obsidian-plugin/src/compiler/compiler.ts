@@ -20,7 +20,8 @@ interface CompilerError extends Error {
 export async function compileLatex(
   absoluteTexPath: string,
   settings: LatexReferencesSettings,
-  gardenrefsTexContent?: string
+  gardenrefsTexContent?: string,
+  pluginDir?: string
 ): Promise<CompileResult> {
   const startedAt = Date.now();
   const workingDirectory = path.dirname(absoluteTexPath);
@@ -41,18 +42,31 @@ export async function compileLatex(
     }
   }
 
+  // Construct TEXINPUTS so LaTeX finds gardenref.sty automatically across the vault
+  const candidateDirs: string[] = [
+    ".",
+    pluginDir ? `${pluginDir}//` : "",
+    pluginDir ? `${path.join(pluginDir, "latex")}//` : "",
+    "/Users/koltenbendickson/Developer/obsidian-latex-references/latex//",
+    "/Users/koltenbendickson/Library/Mobile Documents/iCloud~md~obsidian/Documents/The Vault/.obsidian/plugins/obsidian-latex-references//"
+  ].filter(Boolean);
+
+  const texInputs = `${candidateDirs.join(":")}:`;
+
   const executable = settings.latexmkPath || "/Library/TeX/texbin/latexmk";
   const args = [
     "-pdf",
     "-interaction=nonstopmode",
     "-file-line-error",
     "-synctex=1",
+    `--jobname=${baseName}`,
+    "-usepretex=\\RequirePackage{etoolbox}\\AtEndPreamble{\\RequirePackage{gardenref}}",
     `-outdir=${buildDirectory}`,
     fileName
   ];
 
   try {
-    const { stdout, stderr } = await runCompiler(executable, args, workingDirectory);
+    const { stdout, stderr } = await runCompiler(executable, args, workingDirectory, texInputs);
     await copyFile(builtPdfPath, pdfPath);
     const log = `${stdout}\n${stderr}`.trim();
     return {
@@ -93,7 +107,12 @@ function isCompilerError(error: unknown): error is CompilerError {
   return error instanceof Error;
 }
 
-function runCompiler(executable: string, args: string[], workingDirectory: string): Promise<ExecOutput> {
+function runCompiler(
+  executable: string,
+  args: string[],
+  workingDirectory: string,
+  texInputs: string
+): Promise<ExecOutput> {
   return new Promise((resolve, reject: (reason: CompilerError) => void) => {
     execFile(executable, args, {
       cwd: workingDirectory,
@@ -103,7 +122,8 @@ function runCompiler(executable: string, args: string[], workingDirectory: strin
       windowsHide: true,
       env: {
         ...process.env,
-        PATH: `/Library/TeX/texbin:/usr/local/bin:${process.env.PATH || ""}`
+        PATH: `/Library/TeX/texbin:/usr/local/bin:${process.env.PATH || ""}`,
+        TEXINPUTS: texInputs
       }
     }, (error: ExecFileException | null, stdout: string, stderr: string) => {
       if (error) {

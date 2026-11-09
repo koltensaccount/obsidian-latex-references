@@ -23,6 +23,16 @@ export interface EnsureIdResult {
   target: CalloutEnvironment;
 }
 
+export type ReferenceStatus = 'unapproved' | 'approved_local' | 'awaiting_deploy' | 'published' | 'deploy_failed';
+
+export const REFERENCE_STATUS: {
+  readonly UNAPPROVED: 'unapproved';
+  readonly APPROVED_LOCAL: 'approved_local';
+  readonly AWAITING_DEPLOY: 'awaiting_deploy';
+  readonly PUBLISHED: 'published';
+  readonly DEPLOY_FAILED: 'deploy_failed';
+};
+
 export interface ReferenceSnapshot {
   id: string;
   type: string;
@@ -30,8 +40,13 @@ export interface ReferenceSnapshot {
   body: string;
   sourceFile: string;
   approvedAt: string;
+  updatedAt?: string;
   url: string;
   contentHash: string;
+  status?: ReferenceStatus;
+  publishedAt?: string | null;
+  lastVerifiedAt?: string | null;
+  verificationError?: string | null;
 }
 
 export interface ReferencesManifest {
@@ -49,6 +64,7 @@ export function generateCandidateId(target: CalloutEnvironment): string;
 export function uniqueId(target: CalloutEnvironment, text: string, reservedIds?: string[]): string;
 export function findSameEnvironment(text: string, original: CalloutEnvironment): CalloutEnvironment;
 export function ensureBlockId(text: string, original: CalloutEnvironment, reservedIds?: string[]): EnsureIdResult;
+export function sanitizeLatexRefText(text: string): string;
 export function buildLatexRefCommand(id: string, selectedText?: string, macroName?: string): string;
 export function computeHash(content: string): string;
 export function createEmptyManifest(baseUrl?: string): ReferencesManifest;
@@ -56,11 +72,22 @@ export function normalizeUrl(baseUrl: string, id: string): string;
 export function approveSnapshot(
   manifest: ReferencesManifest | null,
   item: CalloutEnvironment | any,
-  options?: { baseUrl?: string; approvedAt?: string }
+  options?: { baseUrl?: string; approvedAt?: string; status?: ReferenceStatus; allowOverwrite?: boolean }
+): { manifest: ReferencesManifest; snapshot: ReferenceSnapshot };
+export function updateReferenceStatus(
+  manifest: ReferencesManifest,
+  id: string,
+  status: ReferenceStatus,
+  details?: { lastVerifiedAt?: string; publishedAt?: string; verificationError?: string | null }
 ): { manifest: ReferencesManifest; snapshot: ReferenceSnapshot };
 export function unpublishSnapshot(manifest: ReferencesManifest, id: string): { manifest: ReferencesManifest; removed: boolean };
 export function isApproved(manifest: ReferencesManifest, id: string): boolean;
 export function getSnapshot(manifest: ReferencesManifest, id: string): ReferenceSnapshot | null;
 export function detectDrift(snapshot: ReferenceSnapshot, currentCallout: CalloutEnvironment): boolean;
+export function verifyLiveReference(
+  url: string,
+  expectedTitle?: string,
+  timeoutMs?: number
+): Promise<{ ok: boolean; status: number; error?: string }>;
 export function exportGardenrefsTex(manifest: ReferencesManifest): string;
 export function parseDiagnostics(log: string): Array<{ file: string; line: number | null; severity: "error" | "warning"; message: string }>;
