@@ -71,6 +71,10 @@ export default class LatexReferencesPlugin extends Plugin {
     this.addCommand({
       id: "compile-active-latex",
       name: "Compile active LaTeX document",
+      hotkeys: [
+        { modifiers: ["Mod"], key: "s" },
+        { modifiers: ["Mod"], key: "Enter" }
+      ],
       checkCallback: (checking) => {
         const view = this.getActiveLatexView();
         if (!view) return false;

@@ -1,32 +1,66 @@
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+  hasNextSnippetField,
+  hasPrevSnippetField,
+  nextSnippetField,
+  prevSnippetField,
+  snippetKeymap
+} from "@codemirror/autocomplete";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  indentWithTab,
+  redo,
+  selectAll,
+  toggleComment,
+  undo
+} from "@codemirror/commands";
+import {
+  bracketMatching,
+  foldGutter,
+  foldKeymap,
+  indentOnInput,
+  StreamLanguage
+} from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
-import { EditorState, Prec } from "@codemirror/state";
-import { EditorView, basicSetup } from "codemirror";
-import { keymap } from "@codemirror/view";
-import { tags } from "@lezer/highlight";
+import {
+  highlightSelectionMatches,
+  openSearchPanel,
+  search,
+  searchKeymap
+} from "@codemirror/search";
+import { EditorState, Prec, type Extension } from "@codemirror/state";
+import {
+  drawSelection,
+  dropCursor,
+  EditorView,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  highlightSpecialChars,
+  keymap,
+  lineNumbers
+} from "@codemirror/view";
 import { TextFileView, WorkspaceLeaf } from "obsidian";
 import type LatexReferencesPlugin from "../main";
+import { LatexProjectAutocompleteProvider } from "./autocomplete";
+import { getOverleafThemeExtensions } from "./theme";
 
 export const LATEX_VIEW_TYPE = "latex-references-editor";
-
-const latexHighlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: "var(--text-accent, #7aa2f7)", fontWeight: "500" },
-  { tag: tags.comment, color: "var(--text-faint, #6272a4)", fontStyle: "italic" },
-  { tag: tags.string, color: "var(--code-string, #9ece6a)" },
-  { tag: tags.number, color: "var(--code-value, #ff9e64)" },
-  { tag: tags.bracket, color: "var(--text-muted, #787c99)" },
-  { tag: tags.atom, color: "var(--code-property, #bb9af7)" },
-  { tag: tags.variableName, color: "var(--text-normal, #c0caf5)" },
-  { tag: tags.special(tags.string), color: "var(--code-important, #e0af68)" }
-]);
 
 export class LatexEditorView extends TextFileView {
   public editor: EditorView | null = null;
   private loadedText = "";
   private saveTimer: number | null = null;
+  private autocompleteProvider: LatexProjectAutocompleteProvider;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: LatexReferencesPlugin) {
     super(leaf);
+    this.autocompleteProvider = new LatexProjectAutocompleteProvider(this.app);
   }
 
   getViewType(): string {
@@ -41,8 +75,125 @@ export class LatexEditorView extends TextFileView {
     this.contentEl.empty();
     this.contentEl.addClass("latex-references-editor-view");
 
-    const latexKeymap = Prec.highest(
+    // 1. Scope integration for Obsidian-level hotkey delegation
+    this.registerScopeHotkeys();
+
+    // 2. Build CodeMirror state with full Overleaf conveniences
+    const state = this.buildEditorState(this.loadedText);
+
+    this.editor = new EditorView({
+      parent: this.contentEl,
+      state
+    });
+
+    this.addAction("play", "Compile LaTeX document (⌘S / ⌘Enter)", () => void this.plugin.compileView(this));
+    this.addAction("panel-right-open", "Toggle PDF preview", () => void this.plugin.togglePdfPreview(this));
+  }
+
+  private registerScopeHotkeys(): void {
+    // Undo / Redo
+    this.scope.register(["Mod"], "z", (evt) => {
+      evt.preventDefault();
+      if (this.editor) undo(this.editor);
+      return false;
+    });
+    this.scope.register(["Mod", "Shift"], "z", (evt) => {
+      evt.preventDefault();
+      if (this.editor) redo(this.editor);
+      return false;
+    });
+
+    // Save & Compile (Cmd+S)
+    this.scope.register(["Mod"], "s", (evt) => {
+      evt.preventDefault();
+      void this.plugin.compileView(this);
+      return false;
+    });
+
+    // Compile (Cmd+Enter)
+    this.scope.register(["Mod"], "Enter", (evt) => {
+      evt.preventDefault();
+      void this.plugin.compileView(this);
+      return false;
+    });
+
+    // Select All (Cmd+A)
+    this.scope.register(["Mod"], "a", (evt) => {
+      evt.preventDefault();
+      if (this.editor) selectAll(this.editor);
+      return false;
+    });
+
+    // Find (Cmd+F)
+    this.scope.register(["Mod"], "f", (evt) => {
+      evt.preventDefault();
+      if (this.editor) openSearchPanel(this.editor);
+      return false;
+    });
+
+    // Toggle Comment (Cmd+/)
+    this.scope.register(["Mod"], "/", (evt) => {
+      evt.preventDefault();
+      if (this.editor) toggleComment(this.editor);
+      return false;
+    });
+  }
+
+  private buildEditorState(doc: string): EditorState {
+    const docPath = this.file?.path ?? "";
+    const isDark = document.body.classList.contains("theme-dark");
+
+    const customKeymap = Prec.highest(
       keymap.of([
+        // Standard Editing & History
+        { key: "Mod-z", run: undo, preventDefault: true },
+        { key: "Mod-Shift-z", run: redo, preventDefault: true },
+        { key: "Mod-y", run: redo, preventDefault: true },
+
+        // Compilation Shortcuts
+        {
+          key: "Mod-s",
+          run: () => {
+            void this.plugin.compileView(this);
+            return true;
+          },
+          preventDefault: true
+        },
+        {
+          key: "Mod-Enter",
+          run: () => {
+            void this.plugin.compileView(this);
+            return true;
+          },
+          preventDefault: true
+        },
+
+        // Select All & Find
+        { key: "Mod-a", run: selectAll, preventDefault: true },
+        { key: "Mod-f", run: openSearchPanel, preventDefault: true },
+        { key: "Mod-/", run: toggleComment, preventDefault: true },
+
+        // Snippet Placeholder & Indentation Navigation
+        {
+          key: "Tab",
+          run: (view) => {
+            if (hasNextSnippetField(view.state)) {
+              return nextSnippetField(view);
+            }
+            return indentWithTab(view);
+          }
+        },
+        {
+          key: "Shift-Tab",
+          run: (view) => {
+            if (hasPrevSnippetField(view.state)) {
+              return prevSnippetField(view);
+            }
+            return indentLess(view);
+          }
+        },
+
+        // Callout References Picker
         {
           key: "Alt-l",
           mac: "Alt-l",
@@ -50,30 +201,71 @@ export class LatexEditorView extends TextFileView {
             this.plugin.triggerReferencePicker(this, view);
             return true;
           }
-        }
+        },
+
+        // Standard Fallbacks
+        ...snippetKeymap,
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...historyKeymap,
+        ...searchKeymap,
+        ...completionKeymap,
+        ...foldKeymap
       ])
     );
 
-    this.editor = new EditorView({
-      parent: this.contentEl,
-      state: EditorState.create({
-        doc: this.loadedText,
-        extensions: [
-          basicSetup,
-          latexKeymap,
-          StreamLanguage.define(stex),
-          syntaxHighlighting(latexHighlightStyle),
-          EditorView.lineWrapping,
-          EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
-            this.scheduleSave();
-          })
-        ]
-      })
-    });
+    const extensions: Extension[] = [
+      // Gutters & Line Numbers
+      lineNumbers(),
+      highlightActiveLineGutter(),
+      highlightActiveLine(),
+      foldGutter(),
 
-    this.addAction("play", "Compile LaTeX document", () => void this.plugin.compileView(this));
-    this.addAction("panel-right-open", "Toggle PDF preview", () => void this.plugin.togglePdfPreview(this));
+      // Selection & Cursor
+      drawSelection(),
+      dropCursor(),
+      EditorState.allowMultipleSelections.of(true),
+      highlightSpecialChars(),
+      highlightSelectionMatches(),
+
+      // History & Undo Tracking
+      history(),
+
+      // Delimiters & Typing Behavior
+      bracketMatching(),
+      indentOnInput(),
+      closeBrackets({ brackets: ["(", "[", "{", "'", '"', "$"] }),
+
+      // LaTeX Syntax & Mode
+      StreamLanguage.define(stex),
+      EditorState.languageData.of(() => [{ commentTokens: { line: "%" } }]),
+
+      // Search & Autocomplete
+      search({ top: true }),
+      autocompletion({
+        override: [this.autocompleteProvider.getCompletionSource(docPath)],
+        defaultKeymap: false, // handled by customKeymap above
+        icons: true
+      }),
+
+      // Overleaf Themes (Scoped to this view)
+      ...getOverleafThemeExtensions(isDark),
+
+      // Keymaps
+      customKeymap,
+
+      // View Layout & Change Listener
+      EditorView.lineWrapping,
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        this.scheduleSave();
+      })
+    ];
+
+    return EditorState.create({
+      doc,
+      extensions
+    });
   }
 
   async onClose(): Promise<void> {
@@ -90,23 +282,39 @@ export class LatexEditorView extends TextFileView {
   setViewData(data: string, clear: boolean): void {
     this.loadedText = data;
     if (!this.editor) return;
+
     const current = this.editor.state.doc.toString();
-    if (clear || current !== data) {
-      this.editor.dispatch({ changes: { from: 0, to: current.length, insert: data } });
+    // CRUCIAL: Do not reset editor state or destroy undo history if text has not changed (e.g. after save)
+    if (current === data) return;
+
+    if (clear) {
+      // Re-create editor state only when switching to a completely new file
+      this.editor.setState(this.buildEditorState(data));
+    } else {
+      // Incremental dispatch that preserves history stack
+      this.editor.dispatch({
+        changes: { from: 0, to: current.length, insert: data },
+        userEvent: "set"
+      });
     }
   }
 
   clear(): void {
     this.loadedText = "";
     if (this.editor) {
-      this.editor.dispatch({ changes: { from: 0, to: this.editor.state.doc.length, insert: "" } });
+      this.editor.dispatch({
+        changes: { from: 0, to: this.editor.state.doc.length, insert: "" }
+      });
     }
   }
 
   focusLine(line: number): void {
     if (!this.editor || line < 1 || line > this.editor.state.doc.lines) return;
     const target = this.editor.state.doc.line(line);
-    this.editor.dispatch({ selection: { anchor: target.from }, scrollIntoView: true });
+    this.editor.dispatch({
+      selection: { anchor: target.from },
+      scrollIntoView: true
+    });
     this.editor.focus();
   }
 
