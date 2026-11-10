@@ -1,12 +1,24 @@
-import { StreamLanguage } from "@codemirror/language";
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import { TextFileView, WorkspaceLeaf } from "obsidian";
 import type LatexReferencesPlugin from "../main";
 
 export const LATEX_VIEW_TYPE = "latex-references-editor";
+
+const latexHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--text-accent, #7aa2f7)", fontWeight: "500" },
+  { tag: tags.comment, color: "var(--text-faint, #6272a4)", fontStyle: "italic" },
+  { tag: tags.string, color: "var(--code-string, #9ece6a)" },
+  { tag: tags.number, color: "var(--code-value, #ff9e64)" },
+  { tag: tags.bracket, color: "var(--text-muted, #787c99)" },
+  { tag: tags.atom, color: "var(--code-property, #bb9af7)" },
+  { tag: tags.variableName, color: "var(--text-normal, #c0caf5)" },
+  { tag: tags.special(tags.string), color: "var(--code-important, #e0af68)" }
+]);
 
 export class LatexEditorView extends TextFileView {
   public editor: EditorView | null = null;
@@ -50,6 +62,7 @@ export class LatexEditorView extends TextFileView {
           basicSetup,
           latexKeymap,
           StreamLanguage.define(stex),
+          syntaxHighlighting(latexHighlightStyle),
           EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;

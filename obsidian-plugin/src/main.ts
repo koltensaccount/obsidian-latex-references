@@ -322,7 +322,7 @@ export default class LatexReferencesPlugin extends Plugin {
   }
 
   async togglePdfPreview(sourceView?: LatexEditorView): Promise<void> {
-    if (this.pdfLeaf) {
+    if (this.pdfLeaf && this.pdfLeaf.parent) {
       this.pdfLeaf.detach();
       this.pdfLeaf = null;
       return;
@@ -340,16 +340,21 @@ export default class LatexReferencesPlugin extends Plugin {
   }
 
   private async showPdfPreview(relativePdfPath: string): Promise<void> {
-    const resourceUrl = this.app.vault.adapter.getResourcePath(relativePdfPath);
-    if (!resourceUrl) return;
+    const file = this.app.vault.getAbstractFileByPath(relativePdfPath);
+    if (!(file instanceof TFile)) return;
 
-    if (!this.pdfLeaf || !this.pdfLeaf.view) {
-      this.pdfLeaf = this.app.workspace.getLeaf("split", "vertical");
-      await this.pdfLeaf.setViewState({ type: PDF_VIEW_TYPE, active: false });
+    if (!this.pdfLeaf || !this.pdfLeaf.parent) {
+      const existing = this.app.workspace.getLeavesOfType("pdf").find((l) => {
+        const f = (l.view as any)?.file;
+        return f?.path === relativePdfPath;
+      });
+      if (existing) {
+        this.pdfLeaf = existing;
+      } else {
+        this.pdfLeaf = this.app.workspace.getLeaf("split", "vertical");
+      }
     }
 
-    if (this.pdfLeaf.view instanceof LatexPdfView) {
-      this.pdfLeaf.view.show(resourceUrl);
-    }
+    await this.pdfLeaf.openFile(file, { active: false });
   }
 }
