@@ -13,12 +13,17 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
   private plugin: LatexReferencesPlugin;
   private editorView: EditorView;
   private items: CalloutEnvironment[];
+  private initialSelection: { from: number; to: number };
+  private selectedText: string;
 
   constructor(app: App, plugin: LatexReferencesPlugin, editorView: EditorView, items: CalloutEnvironment[]) {
     super(app);
     this.plugin = plugin;
     this.editorView = editorView;
     this.items = items;
+    const sel = editorView.state.selection.main;
+    this.initialSelection = { from: sel.from, to: sel.to };
+    this.selectedText = editorView.state.sliceDoc(sel.from, sel.to);
     this.setPlaceholder("Find a definition, formula, theorem, lemma…");
     this.limit = 100;
   }
@@ -109,17 +114,18 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
       }
 
       // 2. Insert LaTeX reference command into CodeMirror buffer
-      const selection = this.editorView.state.selection.main;
-      const selectedText = this.editorView.state.sliceDoc(selection.from, selection.to);
+      const from = this.initialSelection.from;
+      const to = this.initialSelection.to;
+      const selectedText = this.selectedText;
       const replacementText = buildLatexRefCommand(targetId, selectedText || item.title);
 
       this.editorView.dispatch({
         changes: {
-          from: selection.from,
-          to: selection.to,
+          from: from,
+          to: to,
           insert: replacementText
         },
-        selection: { anchor: selection.from + replacementText.length }
+        selection: { anchor: from + replacementText.length }
       });
       this.editorView.focus();
 

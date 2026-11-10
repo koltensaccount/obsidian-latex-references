@@ -43,6 +43,32 @@ export default class LatexReferencesPlugin extends Plugin {
     // Setup integration with LaTeX Live editor
     this.setupLatexLiveIntegration();
 
+    // Register capture-phase window keydown listener for instant Option+L (Alt+L)
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (
+        event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")
+      ) {
+        if (this.isLatexContext()) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const editorView = this.getActiveTexEditorView();
+          if (editorView) {
+            void this.triggerReferencePicker(editorView);
+          } else {
+            new Notice("Focus a LaTeX editor to insert references (Option+L).");
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeydown, { capture: true });
+    this.register(() => {
+      window.removeEventListener("keydown", handleKeydown, { capture: true });
+    });
+
     // Register Obsidian command for mathematical reference insertion (Option+L)
     this.addCommand({
       id: "insert-latex-reference",
@@ -138,22 +164,57 @@ export default class LatexReferencesPlugin extends Plugin {
   /**
    * Builds the CodeMirror 6 extension that binds Alt+L (Option+L on macOS)
    * to open the mathematical reference picker popup.
-   * Uses domEventHandlers to reliably intercept Option+L across macOS keyboard layouts.
+   * Uses highest precedence with both keymap and DOM event handler to guarantee instant response.
    */
   createReferenceExtension(): Extension {
-    return Prec.high(
+    return Prec.highest([
+      keymap.of([
+        {
+          key: "Alt-l",
+          mac: "Alt-l",
+          run: (view) => {
+            void this.triggerReferencePicker(view);
+            return true;
+          }
+        }
+      ]),
       EditorView.domEventHandlers({
         keydown: (event, view) => {
-          if (event.altKey && (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")) {
+          if (
+            event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")
+          ) {
             event.preventDefault();
-            event.stopPropagation();
+            event.stopImmediatePropagation();
             void this.triggerReferencePicker(view);
             return true;
           }
           return false;
         }
       })
-    );
+    ]);
+  }
+
+  /**
+   * Determines whether the current active context is a LaTeX editing or preview session.
+   */
+  isLatexContext(): boolean {
+    const activeLeaf = this.app.workspace.activeLeaf;
+    const viewType = activeLeaf?.view?.getViewType?.();
+    if (viewType === "latex-live-editor" || viewType === "latex-live-preview") {
+      return true;
+    }
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile?.extension === "tex") {
+      return true;
+    }
+    const activeEl = document.activeElement;
+    if (activeEl?.closest(".latex-live-view, .latex-live-editor, .latex-live-preview")) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -179,19 +240,43 @@ export default class LatexReferencesPlugin extends Plugin {
 
   /**
    * Resolves the active CodeMirror EditorView from either LaTeX Live's TexView
-   * or any active editor leaf.
+   * or companion editor leaf (e.g. when preview leaf or companion pane is active).
    */
   getActiveTexEditorView(): EditorView | null {
+    // 1. Direct active leaf check
     const leaf = this.app.workspace.activeLeaf;
     const view = leaf?.view as any;
-    if (!view) return null;
-
-    if (view.editorView instanceof EditorView || view.editorView?.state) {
+    if (view?.editorView instanceof EditorView || view?.editorView?.state) {
       return view.editorView;
     }
-    if (view.editor?.cm instanceof EditorView || view.editor?.cm?.state) {
+    if (view?.editor?.cm instanceof EditorView || view?.editor?.cm?.state) {
       return view.editor.cm;
     }
+
+    // 2. Fall back to companion editor leaf (e.g. when preview leaf or sidebar is focused)
+    const activeFile = this.app.workspace.getActiveFile();
+    const edLeaves = this.app.workspace.getLeavesOfType("latex-live-editor");
+    for (const edLeaf of edLeaves) {
+      const edView = edLeaf.view as any;
+      if (!activeFile || edView?.file?.path === activeFile.path) {
+        if (edView?.editorView instanceof EditorView || edView?.editorView?.state) {
+          return edView.editorView;
+        }
+        if (edView?.editor?.cm instanceof EditorView || edView?.editor?.cm?.state) {
+          return edView.editor.cm;
+        }
+      }
+    }
+    if (edLeaves.length > 0) {
+      const edView = edLeaves[0].view as any;
+      if (edView?.editorView instanceof EditorView || edView?.editorView?.state) {
+        return edView.editorView;
+      }
+      if (edView?.editor?.cm instanceof EditorView || edView?.editor?.cm?.state) {
+        return edView.editor.cm;
+      }
+    }
+
     return null;
   }
 
