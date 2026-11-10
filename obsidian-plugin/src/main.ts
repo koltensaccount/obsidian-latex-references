@@ -5,6 +5,7 @@ import { FileSystemAdapter, Notice, Plugin, TFile, type Events, type WorkspaceLe
 import { Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { ReferencePickerModal } from "./references/picker";
+import { ApprovalModal } from "./references/approval-modal";
 import { VaultCalloutIndexer } from "./references/vault-indexer";
 import { DEFAULT_SETTINGS, LatexReferencesSettingTab } from "./settings/settings";
 import type { LatexReferencesSettings } from "./types";
@@ -75,6 +76,21 @@ export default class LatexReferencesPlugin extends Plugin {
           new Notice(res.message);
         } else {
           new Notice(`Deploy failed: ${res.message}`, 8000);
+        }
+      }
+    });
+
+    // Command to manage/approve mathematical reference snapshots
+    this.addCommand({
+      id: "manage-reference-snapshot",
+      name: "Manage mathematical reference snapshot",
+      callback: async () => {
+        const envs = await this.vaultIndexer.getEnvironments();
+        const publishedEnv = envs.find((e) => e.id === "def-group-homomorphism") || envs[0];
+        if (publishedEnv) {
+          new ApprovalModal(this.app, this, publishedEnv).open();
+        } else {
+          new Notice("No mathematical environments found in vault.");
         }
       }
     });

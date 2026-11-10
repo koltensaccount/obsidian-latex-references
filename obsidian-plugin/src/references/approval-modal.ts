@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Notice, Setting, MarkdownRenderer } from "obsidian";
 import type LatexReferencesPlugin from "../main";
 import {
   approveSnapshot,
@@ -22,10 +22,10 @@ export class ApprovalModal extends Modal {
   }
 
   onOpen(): void {
-    this.render();
+    void this.render();
   }
 
-  private render(): void {
+  private async render(): Promise<void> {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("latex-ref-approval-modal");
@@ -33,61 +33,72 @@ export class ApprovalModal extends Modal {
     const targetId = this.target.id || "";
     const snapshot = getSnapshot(this.plugin.referencesManifest, targetId);
     const status: ReferenceStatus = (snapshot?.status as ReferenceStatus) || REFERENCE_STATUS.UNAPPROVED;
+    const formattedType = this.target.type
+      ? this.target.type.charAt(0).toUpperCase() + this.target.type.slice(1).toLowerCase()
+      : "Callout";
 
-    contentEl.createEl("h2", { text: snapshot ? "Manage Reference Snapshot" : "Approve Reference Snapshot" });
+    // 1. Title & Type Hierarchy Header
+    const headerEl = contentEl.createDiv({ cls: "latex-ref-modal-header" });
+    const titleRow = headerEl.createDiv({ cls: "latex-ref-modal-title-row" });
+    titleRow.createEl("h2", { text: this.target.title, cls: "latex-ref-modal-title" });
+    titleRow.createSpan({ text: formattedType, cls: `cl-type-badge cl-badge-${this.target.type.toLowerCase()}` });
 
-    // Status Banner displaying the 5 lifecycle states
-    const statusBanner = contentEl.createDiv({ cls: "latex-ref-status-banner" });
+    // Status pill
+    const statusRow = headerEl.createDiv({ cls: "latex-ref-modal-status-row" });
+    const statusIndicator = statusRow.createSpan({ cls: `latex-ref-status-indicator is-${status}` });
     switch (status) {
       case REFERENCE_STATUS.PUBLISHED:
-        statusBanner.createSpan({ cls: "latex-ref-status-approved", text: "✓ Successfully Published (Live on Web)" });
+        statusIndicator.setText("Live on Digital Garden");
         break;
       case REFERENCE_STATUS.AWAITING_DEPLOY:
-        statusBanner.createSpan({ cls: "latex-ref-status-pending", text: "⏳ Awaiting Deployment (Vercel Build Pending)" });
+        statusIndicator.setText("Awaiting Deployment (Vercel Build Pending)");
         break;
       case REFERENCE_STATUS.APPROVED_LOCAL:
-        statusBanner.createSpan({ cls: "latex-ref-status-local", text: "📄 Approved Locally (Ready to Deploy)" });
+        statusIndicator.setText("Approved Locally (Ready to Deploy)");
         break;
       case REFERENCE_STATUS.DEPLOY_FAILED:
-        statusBanner.createSpan({ cls: "latex-ref-status-failed", text: "✖ Publication Verification Failed" });
+        statusIndicator.setText("Publication Verification Failed");
         break;
       case REFERENCE_STATUS.UNAPPROVED:
       default:
-        statusBanner.createSpan({ cls: "latex-ref-status-draft", text: "⚠ Draft / Unpublished" });
+        statusIndicator.setText("Unpublished Draft");
         break;
     }
 
-    const infoList = contentEl.createEl("div", { cls: "latex-ref-info-box" });
-    infoList.createDiv({ text: `Title: ${this.target.title}` });
-    infoList.createDiv({ text: `Type: ${this.target.type}` });
-    infoList.createDiv({ text: `ID: ^${targetId || "(none)"}` });
-    infoList.createDiv({ text: `Source: ${this.target.filePath}` });
-    if (snapshot?.url) {
-      const urlRow = infoList.createDiv();
-      urlRow.createSpan({ text: "URL: " });
-      urlRow.createEl("a", { text: snapshot.url, href: snapshot.url });
-    }
-    if (snapshot?.publishedAt) {
-      infoList.createDiv({ text: `Published At: ${new Date(snapshot.publishedAt).toLocaleString()}` });
-    }
-    if (snapshot?.verificationError) {
-      const errRow = infoList.createDiv({ cls: "latex-ref-error-row" });
-      errRow.createSpan({ text: `Error: ${snapshot.verificationError}` });
+    // 2. Rendered Callout Preview (Hero Component)
+    const previewSection = contentEl.createDiv({ cls: "latex-ref-preview-section" });
+    const renderedContainer = previewSection.createDiv({ cls: "latex-ref-rendered-callout" });
+
+    // Format proper markdown callout with unquoted body lines
+    const bodyLines = (this.target.body || "")
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    const calloutMarkdown = `> [!${this.target.type.toLowerCase()}] ${this.target.title}\n${bodyLines}`;
+
+    try {
+      await MarkdownRenderer.render(
+        this.app,
+        calloutMarkdown,
+        renderedContainer,
+        this.target.filePath,
+        this
+      );
+    } catch (e) {
+      console.error("MarkdownRenderer.render failed:", e);
     }
 
-    contentEl.createEl("h4", { text: "Callout Snapshot Preview" });
-    const previewBox = contentEl.createEl("pre", { cls: "latex-ref-body-preview" });
-    previewBox.setText(this.target.body || "");
-
-    contentEl.createEl("p", {
-      cls: "latex-ref-approval-desc",
+    // 3. Public Accessibility Note
+    const publicNote = contentEl.createDiv({ cls: "latex-ref-public-note" });
+    publicNote.createSpan({
       text: "Unlisted reference pages are publicly accessible to anyone with their URL under /latex-references/<id>/, but excluded from site search, navigation, and graphs."
     });
 
-    // Action Controls
-    const actionsSetting = new Setting(contentEl);
+    // 4. Primary Approval Actions
+    const actionsEl = contentEl.createDiv({ cls: "latex-ref-actions" });
+    const actionsSetting = new Setting(actionsEl);
 
-    // 1. Approve / Update Snapshot Locally
+    // Primary CTA
     actionsSetting.addButton((btn) =>
       btn
         .setButtonText(snapshot ? "Update Snapshot" : "Approve Locally")
@@ -100,8 +111,9 @@ export class ApprovalModal extends Modal {
             });
             this.plugin.referencesManifest = res.manifest;
             await this.plugin.saveManifest();
-            new Notice(`Approved reference: ${targetId} locally.`);
-            this.render();
+            await this.plugin.syncActiveGardenrefsTex();
+            new Notice(`Approved reference: ^${targetId} locally.`);
+            void this.render();
             if (this.onComplete) this.onComplete();
           } catch (e) {
             new Notice(`Error approving reference: ${e instanceof Error ? e.message : String(e)}`, 8000);
@@ -109,7 +121,7 @@ export class ApprovalModal extends Modal {
         })
     );
 
-    // 2. Deploy to Digital Garden (Git commit & push)
+    // Push to Digital Garden
     if (snapshot) {
       actionsSetting.addButton((btn) =>
         btn
@@ -117,7 +129,7 @@ export class ApprovalModal extends Modal {
           .onClick(async () => {
             btn.setDisabled(true);
             btn.setButtonText("Pushing…");
-            new Notice("Committing and pushing manifest to Digital Garden repo…");
+            new Notice("Committing and pushing manifest to Digital Garden…");
             const res = await this.plugin.deployManifestToDigitalGarden(
               `feat(references): approve mathematical snapshot ^${targetId}`
             );
@@ -125,14 +137,14 @@ export class ApprovalModal extends Modal {
             btn.setButtonText("Push to Digital Garden");
             if (res.ok) {
               new Notice("Changes pushed! Vercel build initiated.", 5000);
-              this.render();
+              void this.render();
             } else {
               new Notice(`Deploy failed: ${res.message}`, 8000);
             }
           })
       );
 
-      // 3. Verify Live Status
+      // Verify Live Status
       actionsSetting.addButton((btn) =>
         btn
           .setButtonText("Verify Live URL")
@@ -148,11 +160,22 @@ export class ApprovalModal extends Modal {
             } else {
               new Notice(res.message, 6000);
             }
-            this.render();
+            void this.render();
           })
       );
 
-      // 4. Unpublish / Remove
+      // View on Web (if published)
+      if (status === REFERENCE_STATUS.PUBLISHED && snapshot.url) {
+        actionsSetting.addButton((btn) =>
+          btn
+            .setButtonText("View on Web")
+            .onClick(() => {
+              window.open(snapshot.url, "_blank");
+            })
+        );
+      }
+
+      // Unpublish button
       actionsSetting.addExtraButton((btn) => {
         btn
           .setIcon("trash")
@@ -162,11 +185,46 @@ export class ApprovalModal extends Modal {
             const res = unpublishSnapshot(this.plugin.referencesManifest, targetId);
             this.plugin.referencesManifest = res.manifest;
             await this.plugin.saveManifest();
-            new Notice(`Unpublished reference: ${targetId}`);
+            await this.plugin.syncActiveGardenrefsTex();
+            new Notice(`Unpublished reference: ^${targetId}`);
             this.close();
             if (this.onComplete) this.onComplete();
           });
       });
+    }
+
+    // 5. Technical Details (Understated <details>)
+    const detailsEl = contentEl.createEl("details", { cls: "latex-ref-tech-details" });
+    detailsEl.createEl("summary", { text: "Technical Metadata" });
+
+    const techGrid = detailsEl.createDiv({ cls: "latex-ref-tech-grid" });
+
+    const addRow = (label: string, value: string, isCode = false, isLink = false) => {
+      const row = techGrid.createDiv({ cls: "latex-ref-tech-row" });
+      row.createSpan({ text: label, cls: "latex-ref-tech-label" });
+      if (isLink) {
+        row.createEl("a", { text: value, href: value, cls: "latex-ref-tech-val" });
+      } else if (isCode) {
+        row.createEl("code", { text: value, cls: "latex-ref-tech-val" });
+      } else {
+        row.createSpan({ text: value, cls: "latex-ref-tech-val" });
+      }
+    };
+
+    addRow("Reference ID", `^${targetId || "(none)"}`, true);
+    addRow("Source Note", this.target.filePath);
+    addRow("Content Hash", snapshot?.contentHash || "(pending approval)", true);
+    if (snapshot?.url) {
+      addRow("Public URL", snapshot.url, false, true);
+    }
+    if (snapshot?.approvedAt) {
+      addRow("Approved At", new Date(snapshot.approvedAt).toLocaleString());
+    }
+    if (snapshot?.publishedAt) {
+      addRow("Published At", new Date(snapshot.publishedAt).toLocaleString());
+    }
+    if (snapshot?.verificationError) {
+      addRow("Verification Error", snapshot.verificationError);
     }
   }
 

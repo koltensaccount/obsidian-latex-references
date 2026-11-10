@@ -55,26 +55,22 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
     const topRow = el.createDiv({ cls: "cl-suggestion-header" });
     topRow.createSpan({ text: item.title, cls: "cl-suggestion-title" });
 
-    const badge = topRow.createSpan({ cls: `cl-type-badge cl-badge-${item.type}` });
-    badge.setText(item.type.toUpperCase());
-
-    if (item.fold) {
-      const foldBadge = topRow.createSpan({ cls: "cl-fold-badge" });
-      foldBadge.setText(item.fold === "+" ? "EXPANDED" : "COLLAPSED");
+    const formattedType = item.type
+      ? item.type.charAt(0).toUpperCase() + item.type.slice(1).toLowerCase()
+      : "";
+    if (formattedType) {
+      topRow.createSpan({ text: formattedType, cls: `cl-type-badge cl-badge-${item.type.toLowerCase()}` });
     }
 
-    if (item.id) {
-      topRow.createSpan({ text: `^${item.id}`, cls: "cl-id-badge" });
-    }
+    // Subtle, muted publication status (LaTeX picker only)
+    const published = isApproved(this.plugin.referencesManifest, item.id || "");
+    topRow.createSpan({
+      cls: `cl-pub-status ${published ? "is-published" : "is-unpublished"}`,
+      text: published ? "Published" : "Unpublished"
+    });
 
     const metaRow = el.createDiv({ cls: "cl-suggestion-meta" });
     metaRow.createSpan({ text: item.filePath, cls: "cl-suggestion-path" });
-
-    const published = isApproved(this.plugin.referencesManifest, item.id || "");
-    const pubBadge = metaRow.createSpan({
-      cls: published ? "latex-ref-badge-pub" : "latex-ref-badge-unpub",
-      text: published ? "PUBLISHED" : "UNPUBLISHED"
-    });
 
     if (item.body) {
       const firstLine = item.body.split("\n").find((l) => l.trim().length > 0) || "";

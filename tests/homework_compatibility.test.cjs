@@ -79,7 +79,10 @@ test('Phase D: Real Homework Compatibility Suite (HW1-HW8, EXAM1_Review)', () =>
       ], {
         cwd: TEST_ISOLATED_DIR,
         encoding: 'utf8',
-        env: { PATH: '/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin' },
+        env: {
+          ...process.env,
+          PATH: `/Library/TeX/texbin:/usr/local/bin:${process.env.PATH || ''}`
+        },
         maxBuffer: 8 * 1024 * 1024,
         timeout: 180000
       });
