@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 
 const core = require('../reference-core/src/index.js');
 
-const HOMEWORK_ORIGINAL_DIR = '/Users/koltenbendickson/Desktop/MATH 4281 Homework';
+const HOMEWORK_ORIGINAL_DIR = '/Users/koltenbendickson/Library/Mobile Documents/iCloud~md~obsidian/Documents/The Vault/School/Fall 2026/Introduction to Modern Algebra/LaTeX';
 const VAULT_CHEAT_SHEET = '/Users/koltenbendickson/Library/Mobile Documents/iCloud~md~obsidian/Documents/The Vault/School/Fall 2026/Introduction to Modern Algebra/Notebooks/MATH4281 Exam 1 Cheat Sheet.md';
 const GARDEN_REPO_DIR = '/Users/koltenbendickson/Developer/my-digital-garden';
 const LATEX_DIR = path.resolve(__dirname, '../latex');
@@ -26,6 +26,7 @@ test('End-to-End Prototype: Isolated Real Homework + Automatic Setup + Isolated 
   // Copy homework files into isolated workspace (DO NOT modify originals)
   const files = fs.readdirSync(HOMEWORK_ORIGINAL_DIR);
   for (const f of files) {
+    if (f.startsWith('.') || f.endsWith('.pdf')) continue;
     const src = path.join(HOMEWORK_ORIGINAL_DIR, f);
     const dest = path.join(TEST_WORK_DIR, f);
     if (fs.statSync(src).isDirectory()) {

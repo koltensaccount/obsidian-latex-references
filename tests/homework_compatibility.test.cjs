@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const HOMEWORK_ORIGINAL_DIR = '/Users/koltenbendickson/Desktop/MATH 4281 Homework';
+const HOMEWORK_ORIGINAL_DIR = '/Users/koltenbendickson/Library/Mobile Documents/iCloud~md~obsidian/Documents/The Vault/School/Fall 2026/Introduction to Modern Algebra/LaTeX';
 const TEST_ISOLATED_DIR = '/tmp/latex-homework-compatibility-test';
 
 test('Phase D: Real Homework Compatibility Suite (HW1-HW8, EXAM1_Review)', () => {
@@ -31,6 +31,7 @@ test('Phase D: Real Homework Compatibility Suite (HW1-HW8, EXAM1_Review)', () =>
   fs.mkdirSync(TEST_ISOLATED_DIR, { recursive: true });
 
   for (const f of originalFiles) {
+    if (f.startsWith('.') || f.endsWith('.pdf')) continue;
     const src = path.join(HOMEWORK_ORIGINAL_DIR, f);
     const dest = path.join(TEST_ISOLATED_DIR, f);
     if (fs.statSync(src).isDirectory()) {
