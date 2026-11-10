@@ -1,15 +1,13 @@
 import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { FileSystemAdapter, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
-import type { EditorView } from "@codemirror/view";
-import { compileLatex } from "./compiler/compiler";
-import { LATEX_VIEW_TYPE, LatexEditorView } from "./editor/latex-view";
-import { PDF_VIEW_TYPE, LatexPdfView } from "./editor/pdf-view";
+import { FileSystemAdapter, Notice, Plugin, TFile, type Events, type WorkspaceLeaf } from "obsidian";
+import { Prec, type Extension } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
 import { ReferencePickerModal } from "./references/picker";
 import { VaultCalloutIndexer } from "./references/vault-indexer";
 import { DEFAULT_SETTINGS, LatexReferencesSettingTab } from "./settings/settings";
-import type { CompileResult, LatexReferencesSettings } from "./types";
+import type { LatexReferencesSettings } from "./types";
 import {
   createEmptyManifest,
   exportGardenrefsTex,
@@ -20,24 +18,17 @@ import {
   type ReferencesManifest
 } from "../../reference-core/src/index";
 
+export type LatexLiveApi = {
+  registerTexEditorExtension(extension: Extension): () => void;
+};
+
 export default class LatexReferencesPlugin extends Plugin {
   settings: LatexReferencesSettings = DEFAULT_SETTINGS;
   referencesManifest: ReferencesManifest = createEmptyManifest();
   vaultIndexer!: VaultCalloutIndexer;
 
-  private compiling = new Set<string>();
-  private lastCompiledSource = new Map<string, string>();
-  private pdfLeaf: WorkspaceLeaf | null = null;
-  private latestPdfPath: string | null = null;
   private statusEl: HTMLElement | null = null;
-
-  getActiveLatexView(): LatexEditorView | null {
-    const leaf = this.app.workspace.activeLeaf;
-    if (leaf?.view && leaf.view.getViewType() === LATEX_VIEW_TYPE) {
-      return leaf.view as LatexEditorView;
-    }
-    return this.app.workspace.getActiveViewOfType(LatexEditorView);
-  }
+  private detachLatexLive: () => void = () => {};
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -45,65 +36,71 @@ export default class LatexReferencesPlugin extends Plugin {
 
     this.vaultIndexer = new VaultCalloutIndexer(this.app);
 
-    try {
-      this.registerView(LATEX_VIEW_TYPE, (leaf) => new LatexEditorView(leaf, this));
-    } catch (e) {
-      // View type already registered
-    }
-    try {
-      this.registerView(PDF_VIEW_TYPE, (leaf) => new LatexPdfView(leaf));
-    } catch (e) {
-      // View type already registered
-    }
-    try {
-      this.registerExtensions(["tex", "sty", "cls"], LATEX_VIEW_TYPE);
-    } catch (e) {
-      // Extensions already registered
-    }
+    // Ensure gardenref.sty is available globally in TEXMFHOME
+    await this.ensureGardenrefPackage();
 
-    this.addSettingTab(new LatexReferencesSettingTab(this.app, this));
+    // Setup integration with LaTeX Live editor
+    this.setupLatexLiveIntegration();
 
-    this.statusEl = this.addStatusBarItem();
-    this.setStatus("LaTeX ready");
-
-    this.addRibbonIcon("sigma", "Compile active LaTeX document", () => void this.compileActive());
-
-    this.addCommand({
-      id: "compile-active-latex",
-      name: "Compile active LaTeX document",
-      hotkeys: [
-        { modifiers: ["Mod"], key: "s" },
-        { modifiers: ["Mod"], key: "Enter" }
-      ],
-      checkCallback: (checking) => {
-        const view = this.getActiveLatexView();
-        if (!view) return false;
-        if (!checking) void this.compileView(view);
-        return true;
-      }
-    });
-
-    this.addCommand({
-      id: "toggle-pdf-preview",
-      name: "Toggle PDF preview",
-      callback: () => void this.togglePdfPreview()
-    });
-
+    // Register Obsidian command for mathematical reference insertion (Option+L)
     this.addCommand({
       id: "insert-latex-reference",
-      name: "Insert LaTeX callout reference",
+      name: "Insert mathematical reference (Option+L)",
+      hotkeys: [{ modifiers: ["Alt"], key: "l" }],
       checkCallback: (checking) => {
-        const view = this.getActiveLatexView();
-        if (!view || !view.editor) return false;
-        if (!checking) this.triggerReferencePicker(view, view.editor);
+        const editorView = this.getActiveTexEditorView();
+        if (!editorView) return false;
+        if (!checking) {
+          void this.triggerReferencePicker(editorView);
+        }
         return true;
       }
     });
 
+    // Command to sync reference mapping file (gardenrefs.tex)
+    this.addCommand({
+      id: "sync-gardenrefs-tex",
+      name: "Sync reference mapping (gardenrefs.tex)",
+      callback: () => void this.syncActiveGardenrefsTex(true)
+    });
+
+    // Command to push reference manifest to Digital Garden
+    this.addCommand({
+      id: "push-manifest-digital-garden",
+      name: "Push reference manifest to Digital Garden",
+      callback: async () => {
+        new Notice("Pushing references to Digital Garden…");
+        const res = await this.deployManifestToDigitalGarden();
+        if (res.ok) {
+          new Notice(res.message);
+        } else {
+          new Notice(`Deploy failed: ${res.message}`, 8000);
+        }
+      }
+    });
+
+    // Settings tab
+    this.addSettingTab(new LatexReferencesSettingTab(this.app, this));
+
+    // Status bar item
+    this.statusEl = this.addStatusBarItem();
+    this.updateStatusBar();
+
+    // Ribbon icon: Quick reference insertion or status check
+    this.addRibbonIcon("sigma", "Insert mathematical reference (Option+L)", () => {
+      const editorView = this.getActiveTexEditorView();
+      if (editorView) {
+        void this.triggerReferencePicker(editorView);
+      } else {
+        new Notice("Focus a LaTeX editor to insert references (Option+L).");
+      }
+    });
+
+    // Vault listeners to keep callout index updated
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile && file.extension === "md") {
-          void this.vaultIndexer.updateFileIndex(file);
+          void this.vaultIndexer.updateFileIndex(file).then(() => this.updateStatusBar());
         }
       })
     );
@@ -112,9 +109,164 @@ export default class LatexReferencesPlugin extends Plugin {
       this.app.vault.on("delete", (file) => {
         if (file instanceof TFile && file.extension === "md") {
           this.vaultIndexer.removeFile(file.path);
+          this.updateStatusBar();
         }
       })
     );
+  }
+
+  onunload(): void {
+    this.detachLatexLive();
+  }
+
+  /**
+   * Builds the CodeMirror 6 extension that binds Alt+L (Option+L on macOS)
+   * to open the mathematical reference picker popup.
+   * Uses domEventHandlers to reliably intercept Option+L across macOS keyboard layouts.
+   */
+  createReferenceExtension(): Extension {
+    return Prec.high(
+      EditorView.domEventHandlers({
+        keydown: (event, view) => {
+          if (event.altKey && (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")) {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.triggerReferencePicker(view);
+            return true;
+          }
+          return false;
+        }
+      })
+    );
+  }
+
+  /**
+   * Connects to LaTeX Live via its documented `registerTexEditorExtension` API.
+   * Also listens to the `latex-live:api-ready` workspace event for reload resilience.
+   */
+  private setupLatexLiveIntegration(): void {
+    this.register(() => this.detachLatexLive());
+
+    const attach = (api: unknown) => {
+      const fn = (api as Partial<LatexLiveApi> | null)?.registerTexEditorExtension;
+      if (typeof fn !== "function") return;
+      this.detachLatexLive();
+      this.detachLatexLive = fn.call(api, this.createReferenceExtension());
+    };
+
+    const plugin = (this.app as any).plugins?.getPlugin("latex-live");
+    if (plugin) {
+      attach(plugin);
+    }
+    this.registerEvent((this.app.workspace as Events).on("latex-live:api-ready", attach));
+  }
+
+  /**
+   * Resolves the active CodeMirror EditorView from either LaTeX Live's TexView
+   * or any active editor leaf.
+   */
+  getActiveTexEditorView(): EditorView | null {
+    const leaf = this.app.workspace.activeLeaf;
+    const view = leaf?.view as any;
+    if (!view) return null;
+
+    if (view.editorView instanceof EditorView || view.editorView?.state) {
+      return view.editorView;
+    }
+    if (view.editor?.cm instanceof EditorView || view.editor?.cm?.state) {
+      return view.editor.cm;
+    }
+    return null;
+  }
+
+  /**
+   * Opens the searchable reference picker for the given editor view.
+   */
+  async triggerReferencePicker(editorView: EditorView): Promise<void> {
+    const items = await this.vaultIndexer.getEnvironments();
+    if (!items.length) {
+      new Notice("No mathematical callouts found in vault.");
+      return;
+    }
+    new ReferencePickerModal(this.app, this, editorView, items).open();
+  }
+
+  /**
+   * Ensures gardenref.sty is installed in the user's standard TeX directory
+   * (~/Library/texmf/tex/latex/gardenref/) so any TeX engine finds it automatically.
+   */
+  async ensureGardenrefPackage(): Promise<void> {
+    try {
+      const home = process.env.HOME || "";
+      if (!home) return;
+      const texmfDir = path.join(home, "Library/texmf/tex/latex/gardenref");
+      const styDest = path.join(texmfDir, "gardenref.sty");
+
+      const adapter = this.app.vault.adapter;
+      if (!(adapter instanceof FileSystemAdapter)) return;
+
+      const pluginDir = path.join(adapter.getBasePath(), ".obsidian/plugins/obsidian-latex-references");
+      const pluginSty = path.join(pluginDir, "gardenref.sty");
+
+      await fs.mkdir(texmfDir, { recursive: true });
+      const hasPluginSty = await fs.stat(pluginSty).then(() => true).catch(() => false);
+      if (hasPluginSty) {
+        await fs.copyFile(pluginSty, styDest);
+      }
+    } catch (e) {
+      console.warn("Could not ensure gardenref.sty in TEXMFHOME:", e);
+    }
+  }
+
+  /**
+   * Exports the latest gardenrefs.tex mapping file into the current document's folder
+   * and the canonical LaTeX course folder.
+   */
+  async syncActiveGardenrefsTex(notify = false): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return;
+
+    const texContent = exportGardenrefsTex(this.referencesManifest);
+    const activeFile = this.app.workspace.getActiveFile();
+    let updatedLocations: string[] = [];
+
+    // 1. Write in active file's directory if it is a TeX file
+    if (activeFile && (activeFile.extension === "tex" || activeFile.extension === "sty")) {
+      const activeFullPath = adapter.getFullPath(activeFile.path);
+      const activeDir = path.dirname(activeFullPath);
+      const targetFile = path.join(activeDir, "gardenrefs.tex");
+      await fs.writeFile(targetFile, texContent, "utf8");
+      updatedLocations.push(path.basename(activeDir));
+    }
+
+    // 2. Also write in the canonical MATH4281 LaTeX folder if present
+    const canonicalRelDir = "School/Fall 2026/Introduction to Modern Algebra/LaTeX";
+    const canonicalFullDir = path.join(adapter.getBasePath(), canonicalRelDir);
+    try {
+      const stat = await fs.stat(canonicalFullDir);
+      if (stat.isDirectory()) {
+        await fs.writeFile(path.join(canonicalFullDir, "gardenrefs.tex"), texContent, "utf8");
+        if (!updatedLocations.includes("LaTeX")) updatedLocations.push("LaTeX");
+      }
+    } catch (_) {}
+
+    if (notify) {
+      new Notice(`Updated gardenrefs.tex in ${updatedLocations.join(", ") || "vault"}`);
+    }
+  }
+
+  updateStatusBar(): void {
+    if (this.statusEl) {
+      if (this.vaultIndexer) {
+        void this.vaultIndexer.getEnvironments().then((items) => {
+          if (this.statusEl) {
+            this.statusEl.setText(`LaTeX References: ${items.length} callouts`);
+          }
+        });
+      } else {
+        this.statusEl.setText("LaTeX References ready");
+      }
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -132,16 +284,35 @@ export default class LatexReferencesPlugin extends Plugin {
 
   async loadManifest(): Promise<void> {
     const data = await this.loadData();
-    if (data && data.referencesManifest) {
+    if (data && data.referencesManifest && Object.keys(data.referencesManifest.references || {}).length > 0) {
       this.referencesManifest = data.referencesManifest;
-    } else {
-      this.referencesManifest = createEmptyManifest(this.settings.baseUrl);
+      return;
     }
+
+    // Fall back to reading existing Digital Garden repository manifest if available
+    if (this.settings.digitalGardenRepoPath) {
+      const gardenManifestPath = path.resolve(
+        this.settings.digitalGardenRepoPath,
+        this.settings.gardenManifestRelativePath || "src/site/_data/latexReferences.json"
+      );
+      try {
+        const content = await fs.readFile(gardenManifestPath, "utf8");
+        const parsed = JSON.parse(content);
+        if (parsed && parsed.references && Object.keys(parsed.references).length > 0) {
+          this.referencesManifest = parsed;
+          await this.persistData();
+          return;
+        }
+      } catch (_) {}
+    }
+
+    this.referencesManifest = createEmptyManifest(this.settings.baseUrl);
   }
 
   async saveManifest(): Promise<void> {
     await this.persistData();
     await this.syncManifestToDigitalGarden();
+    await this.syncActiveGardenrefsTex();
   }
 
   private async persistData(): Promise<void> {
@@ -230,135 +401,5 @@ export default class LatexReferencesPlugin extends Plugin {
       await this.persistData();
       return { live: false, status: res.status, message: `Verification failed: ${res.error}` };
     }
-  }
-
-  setStatus(text: string): void {
-    if (this.statusEl) {
-      this.statusEl.setText(text);
-    }
-  }
-
-  async triggerReferencePicker(view: LatexEditorView, editorView: EditorView): Promise<void> {
-    const items = await this.vaultIndexer.getEnvironments();
-    if (!items.length) {
-      new Notice("No mathematical callouts found in vault.");
-      return;
-    }
-    new ReferencePickerModal(this.app, this, editorView, items).open();
-  }
-
-  async compileActive(): Promise<void> {
-    const view = this.getActiveLatexView();
-    if (!view) {
-      new Notice("Open a .tex document first.");
-      return;
-    }
-    await this.compileView(view);
-  }
-
-  async compileView(view: LatexEditorView, quiet = false): Promise<void> {
-    await view.save();
-    const file = view.file;
-    if (!file) return;
-
-    const source = view.getViewData();
-    if (quiet && this.lastCompiledSource.get(file.path) === source) {
-      this.setStatus("LaTeX up to date");
-      return;
-    }
-
-    if (this.compiling.has(file.path)) {
-      if (!quiet) new Notice(`${file.name} is already compiling...`);
-      return;
-    }
-
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
-      new Notice("LaTeX compilation requires desktop filesystem access.");
-      return;
-    }
-
-    this.compiling.add(file.path);
-    this.setStatus(`Compiling ${file.name}…`);
-    if (!quiet) new Notice(`Compiling ${file.name}…`);
-
-    const texContent = exportGardenrefsTex(this.referencesManifest);
-    const fullPath = adapter.getFullPath(file.path);
-    const pluginDir = path.join(adapter.getBasePath(), ".obsidian/plugins/obsidian-latex-references");
-
-    try {
-      const result = await compileLatex(fullPath, this.settings, texContent, pluginDir);
-      await this.reportResult(result, view, adapter, quiet);
-      if (result.ok) {
-        this.lastCompiledSource.set(file.path, source);
-      }
-    } finally {
-      this.compiling.delete(file.path);
-    }
-  }
-
-  private async reportResult(
-    result: CompileResult,
-    view: LatexEditorView,
-    adapter: FileSystemAdapter,
-    quiet: boolean
-  ): Promise<void> {
-    if (!result.ok) {
-      const firstError = result.diagnostics.find((item) => item.severity === "error");
-      if (firstError?.line) {
-        view.focusLine(firstError.line);
-      }
-      this.setStatus(`LaTeX error${firstError?.line ? ` (line ${firstError.line})` : ""}`);
-      const summary = firstError ? `${firstError.message}${firstError.line ? ` (line ${firstError.line})` : ""}` : "Compilation failed.";
-      new Notice(`Compilation error: ${summary}`, 10000);
-      return;
-    }
-
-    this.setStatus(`Compiled in ${result.durationMs}ms`);
-    if (!quiet) new Notice(`Compiled ${path.basename(result.pdfPath)} in ${result.durationMs}ms.`);
-
-    const relativePdf = path.relative(adapter.getBasePath(), result.pdfPath);
-    this.latestPdfPath = relativePdf;
-
-    if (this.settings.openPdfAfterCompile) {
-      await this.showPdfPreview(relativePdf);
-    }
-  }
-
-  async togglePdfPreview(sourceView?: LatexEditorView): Promise<void> {
-    if (this.pdfLeaf && this.pdfLeaf.parent) {
-      this.pdfLeaf.detach();
-      this.pdfLeaf = null;
-      return;
-    }
-
-    if (this.latestPdfPath) {
-      await this.showPdfPreview(this.latestPdfPath);
-      return;
-    }
-
-    const latexView = sourceView ?? this.app.workspace.getActiveViewOfType(LatexEditorView);
-    if (latexView) {
-      await this.compileView(latexView);
-    }
-  }
-
-  private async showPdfPreview(relativePdfPath: string): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(relativePdfPath);
-    if (!(file instanceof TFile)) return;
-
-    if (!this.pdfLeaf || !this.pdfLeaf.parent) {
-      const existing = this.app.workspace.getLeavesOfType("pdf").find((l) => {
-        const f = (l.view as any)?.file;
-        return f?.path === relativePdfPath;
-      });
-      if (existing) {
-        this.pdfLeaf = existing;
-      } else {
-        this.pdfLeaf = this.app.workspace.getLeaf("split", "vertical");
-      }
-    }
-
-    await this.pdfLeaf.openFile(file, { active: false });
   }
 }

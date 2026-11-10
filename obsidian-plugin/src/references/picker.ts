@@ -127,6 +127,9 @@ export class ReferencePickerModal extends SuggestModal<CalloutEnvironment> {
       });
       this.editorView.focus();
 
+      // Ensure gardenrefs.tex is updated immediately with the latest manifest mappings
+      await this.plugin.syncActiveGardenrefsTex();
+
       // 3. Check publishing status
       const published = isApproved(this.plugin.referencesManifest, targetId);
       if (!published) {

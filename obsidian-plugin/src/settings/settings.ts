@@ -3,14 +3,11 @@ import type LatexReferencesPlugin from "../main";
 import type { LatexReferencesSettings } from "../types";
 
 export const DEFAULT_SETTINGS: LatexReferencesSettings = {
-  engine: "latexmk",
-  latexmkPath: "/Library/TeX/texbin/latexmk",
   baseUrl: "https://obsidian.koltensserver.com",
   digitalGardenRepoPath: "/Users/koltenbendickson/Developer/my-digital-garden",
   gardenManifestRelativePath: "src/site/_data/latexReferences.json",
-  compileOnSave: false,
-  compileDebounceMs: 1500,
-  openPdfAfterCompile: true,
+  autoSyncManifest: true,
+  autoExportGardenrefs: true,
 };
 
 export class LatexReferencesSettingTab extends PluginSettingTab {
@@ -26,18 +23,10 @@ export class LatexReferencesSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "LaTeX References Settings" });
 
-    new Setting(containerEl)
-      .setName("LaTeX compiler (latexmk) executable path")
-      .setDesc("Absolute path or command name for latexmk.")
-      .addText((text) =>
-        text
-          .setPlaceholder("/Library/TeX/texbin/latexmk")
-          .setValue(this.plugin.settings.latexmkPath)
-          .onChange(async (value) => {
-            this.plugin.settings.latexmkPath = value.trim() || "/Library/TeX/texbin/latexmk";
-            await this.plugin.saveSettings();
-          })
-      );
+    containerEl.createEl("p", {
+      text: "Manages mathematical reference picking (Option+L), stable reference identities, and publishing to Digital Garden.",
+      cls: "setting-item-description"
+    });
 
     new Setting(containerEl)
       .setName("Digital Garden base URL")
@@ -66,39 +55,38 @@ export class LatexReferencesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Compile on save")
-      .setDesc("Automatically recompile the document when changes are saved (debounced).")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.compileOnSave)
+      .setName("Manifest relative path")
+      .setDesc("Relative path inside the Digital Garden repo for the reference manifest.")
+      .addText((text) =>
+        text
+          .setPlaceholder("src/site/_data/latexReferences.json")
+          .setValue(this.plugin.settings.gardenManifestRelativePath)
           .onChange(async (value) => {
-            this.plugin.settings.compileOnSave = value;
+            this.plugin.settings.gardenManifestRelativePath = value.trim() || "src/site/_data/latexReferences.json";
             await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl)
-      .setName("Auto-compile debounce delay (ms)")
-      .setDesc("Milliseconds to wait after typing stops before auto-compiling.")
-      .addSlider((slider) =>
-        slider
-          .setLimits(500, 5000, 250)
-          .setValue(this.plugin.settings.compileDebounceMs)
-          .setDynamicTooltip()
+      .setName("Auto-export gardenrefs.tex")
+      .setDesc("Automatically generate and update gardenrefs.tex mapping in the document directory when references change.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoExportGardenrefs)
           .onChange(async (value) => {
-            this.plugin.settings.compileDebounceMs = value;
+            this.plugin.settings.autoExportGardenrefs = value;
             await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl)
-      .setName("Open PDF preview after compile")
-      .setDesc("Automatically display side-by-side PDF preview leaf upon successful compile.")
+      .setName("Auto-sync manifest to repository")
+      .setDesc("Automatically write updated references manifest to the Digital Garden repository on changes.")
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.openPdfAfterCompile)
+          .setValue(this.plugin.settings.autoSyncManifest)
           .onChange(async (value) => {
-            this.plugin.settings.openPdfAfterCompile = value;
+            this.plugin.settings.autoSyncManifest = value;
             await this.plugin.saveSettings();
           })
       );
