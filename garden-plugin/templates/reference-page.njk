@@ -3,73 +3,70 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ ref.title }} ({{ ref.type | upper }}) — LaTeX Reference</title>
+    <title>{{ ref.title }} ({{ ref.type | upper }}) — Mathematical Reference</title>
     <meta name="robots" content="noindex, nofollow">
     {% include "components/pageheader.njk" %}
     <style>
-      .latex-ref-container {
-        max-width: 820px;
-        margin: 2.5rem auto;
-        padding: 0 1.5rem;
+      :root {
+        --reference-max-width: 760px;
       }
-      .latex-ref-meta {
+      html, body {
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
+        background-color: var(--background-primary);
+        color: var(--text-normal);
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 1.5rem;
-        padding-bottom: 0.75rem;
-        border-bottom: 1px solid var(--text-faint, #444);
-        font-size: 0.85rem;
-        color: var(--text-muted, #888);
+        flex-direction: column;
       }
-      .latex-ref-badge {
-        display: inline-block;
-        padding: 0.2rem 0.55rem;
-        border-radius: 4px;
-        font-weight: 600;
-        font-size: 0.75rem;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        background: var(--background-modifier-accent, #7057ff22);
-        color: var(--text-accent, #7057ff);
-        border: 1px solid var(--interactive-accent, #7057ff55);
-      }
-      .latex-ref-id {
-        font-family: var(--font-monospace, monospace);
-        background: var(--background-secondary, #222);
-        padding: 0.15rem 0.4rem;
-        border-radius: 3px;
-        font-size: 0.8rem;
+      .latex-ref-wrapper {
+        flex: 1 0 auto;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        padding: 4rem 1.5rem;
+        box-sizing: border-box;
       }
       .latex-ref-card {
-        margin-top: 1rem;
-        border-radius: 8px;
-        overflow: hidden;
+        width: 100%;
+        max-width: var(--reference-max-width);
+        margin: 0 auto;
       }
-      .latex-ref-footer {
-        margin-top: 2rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--text-faint, #333);
-        font-size: 0.8rem;
-        color: var(--text-faint, #666);
-        display: flex;
-        justify-content: space-between;
+      .latex-ref-card .callout {
+        margin: 0;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .latex-ref-card .callout-content {
+        margin: 0;
+        padding: var(--size-4-3) var(--size-4-4);
+      }
+      .latex-ref-source-attribution {
+        margin-top: 1.25rem;
+        padding: 0 0.25rem;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        text-align: left;
+      }
+      .latex-ref-source-attribution a {
+        color: var(--text-muted);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        transition: color 0.15s ease;
+      }
+      .latex-ref-source-attribution a:hover {
+        color: var(--text-accent, var(--interactive-accent));
+      }
+      @media (max-width: 640px) {
+        .latex-ref-wrapper {
+          padding: 2rem 1rem;
+        }
       }
     </style>
   </head>
   <body class="theme-{{ meta.baseTheme }} markdown-preview-view markdown-rendered markdown-preview-section">
-    <div class="latex-ref-container">
-      <div class="latex-ref-meta">
-        <div>
-          <span class="latex-ref-badge">{{ ref.type }}</span>
-          <span class="latex-ref-id">^{{ ref.id }}</span>
-        </div>
-        <div>
-          <span>Approved Reference Snapshot</span>
-        </div>
-      </div>
-
-      <main class="content cm-s-obsidian">
+    <div class="latex-ref-wrapper">
+      <main class="latex-ref-card cm-s-obsidian" id="ref-{{ ref.id }}" data-reference-id="{{ ref.id }}" data-content-hash="{{ ref.contentHash }}" role="main">
         <div class="callout" data-callout="{{ ref.type }}">
           <div class="callout-title">
             <div class="callout-title-inner">{{ ref.title }}</div>
@@ -78,12 +75,13 @@
             {{ ref.body | renderLatexRefMarkdown | safe }}
           </div>
         </div>
+        {% if sourceAttribution %}
+          <div class="latex-ref-source-attribution">
+            From <a href="{{ sourceAttribution.url }}">{{ sourceAttribution.title }}</a>
+          </div>
+        {% endif %}
       </main>
-
-      <div class="latex-ref-footer">
-        <span>Source: Academic Notes</span>
-        <span>Approved at {{ ref.approvedAt }}</span>
-      </div>
     </div>
+    {% include "components/lucideIcons.njk" %}
   </body>
 </html>

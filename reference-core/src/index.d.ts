@@ -33,6 +33,8 @@ export const REFERENCE_STATUS: {
   readonly DEPLOY_FAILED: 'deploy_failed';
 };
 
+export const STATUS_LABELS: Record<ReferenceStatus, string>;
+
 export interface ReferenceSnapshot {
   id: string;
   type: string;
@@ -43,8 +45,10 @@ export interface ReferenceSnapshot {
   updatedAt?: string;
   url: string;
   contentHash: string;
+  verifiedContentHash?: string | null;
   status?: ReferenceStatus;
   publishedAt?: string | null;
+  liveUrlReachable?: boolean;
   lastVerifiedAt?: string | null;
   verificationError?: string | null;
 }
@@ -54,6 +58,14 @@ export interface ReferencesManifest {
   baseUrl: string;
   updatedAt: string;
   references: Record<string, ReferenceSnapshot>;
+}
+
+export interface LiveVerifyResult {
+  ok: boolean;
+  status: number;
+  kind?: 'verified' | 'not_found' | 'http_error' | 'content_mismatch' | 'stale_content' | 'network_error';
+  contentHash?: string | null;
+  error?: string;
 }
 
 export function scanEnvironments(text: string, filePath?: string): CalloutEnvironment[];
@@ -69,25 +81,38 @@ export function buildLatexRefCommand(id: string, selectedText?: string, macroNam
 export function computeHash(content: string): string;
 export function createEmptyManifest(baseUrl?: string): ReferencesManifest;
 export function normalizeUrl(baseUrl: string, id: string): string;
+export function getStatusLabel(status: ReferenceStatus): string;
 export function approveSnapshot(
   manifest: ReferencesManifest | null,
   item: CalloutEnvironment | any,
-  options?: { baseUrl?: string; approvedAt?: string; status?: ReferenceStatus; allowOverwrite?: boolean }
+  options?: { baseUrl?: string; approvedAt?: string; publishedAt?: string | null; status?: ReferenceStatus; allowOverwrite?: boolean }
 ): { manifest: ReferencesManifest; snapshot: ReferenceSnapshot };
 export function updateReferenceStatus(
   manifest: ReferencesManifest,
   id: string,
   status: ReferenceStatus,
-  details?: { lastVerifiedAt?: string; publishedAt?: string; verificationError?: string | null }
+  details?: {
+    lastVerifiedAt?: string;
+    publishedAt?: string;
+    verifiedContentHash?: string | null;
+    liveUrlReachable?: boolean;
+    httpStatus?: number;
+    kind?: string;
+    verificationError?: string | null;
+  }
 ): { manifest: ReferencesManifest; snapshot: ReferenceSnapshot };
 export function unpublishSnapshot(manifest: ReferencesManifest, id: string): { manifest: ReferencesManifest; removed: boolean };
-export function isApproved(manifest: ReferencesManifest, id: string): boolean;
 export function getSnapshot(manifest: ReferencesManifest, id: string): ReferenceSnapshot | null;
+export function getReferenceStatus(manifest: ReferencesManifest, id: string): ReferenceStatus;
+export function isApproved(manifest: ReferencesManifest, id: string): boolean;
+export function isPublished(manifest: ReferencesManifest, id: string): boolean;
+export function canRenderLiveLink(snapshot: ReferenceSnapshot | null | undefined): boolean;
 export function detectDrift(snapshot: ReferenceSnapshot, currentCallout: CalloutEnvironment): boolean;
 export function verifyLiveReference(
   url: string,
-  expectedTitle?: string,
+  expected?: string | { id?: string; title?: string; contentHash?: string; bustCache?: boolean; fetchImpl?: typeof fetch },
   timeoutMs?: number
-): Promise<{ ok: boolean; status: number; error?: string }>;
+): Promise<LiveVerifyResult>;
+export function exportDigitalGardenManifest(manifest: ReferencesManifest): ReferencesManifest;
 export function exportGardenrefsTex(manifest: ReferencesManifest): string;
 export function parseDiagnostics(log: string): Array<{ file: string; line: number | null; severity: "error" | "warning"; message: string }>;

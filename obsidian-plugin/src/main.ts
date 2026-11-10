@@ -1,27 +1,38 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { FileSystemAdapter, Notice, Plugin, TFile, type Events, type WorkspaceLeaf } from "obsidian";
+import { FileSystemAdapter, MarkdownView, Notice, Plugin, TFile, type Events } from "obsidian";
 import { Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { ReferencePickerModal } from "./references/picker";
+import { ManageReferencePickerModal, ReferencePickerModal } from "./references/picker";
 import { ApprovalModal } from "./references/approval-modal";
 import { VaultCalloutIndexer } from "./references/vault-indexer";
 import { DEFAULT_SETTINGS, LatexReferencesSettingTab } from "./settings/settings";
 import type { LatexReferencesSettings } from "./types";
 import {
   createEmptyManifest,
+  exportDigitalGardenManifest,
   exportGardenrefsTex,
-  updateReferenceStatus,
+  getReferenceStatus,
   getSnapshot,
+  isPublished,
+  scanEnvironments,
+  updateReferenceStatus,
   verifyLiveReference,
   REFERENCE_STATUS,
+  type CalloutEnvironment,
+  type LiveVerifyResult,
+  type ReferenceSnapshot,
   type ReferencesManifest
 } from "../../reference-core/src/index";
 
 export type LatexLiveApi = {
   registerTexEditorExtension(extension: Extension): () => void;
 };
+
+const POLL_INTERVAL_MS = 8000;
+const INITIAL_POLL_DELAY_MS = 5000;
+const MAX_POLL_ATTEMPTS = 26; // ~3.5 minutes total
 
 export default class LatexReferencesPlugin extends Plugin {
   settings: LatexReferencesSettings = DEFAULT_SETTINGS;
@@ -30,6 +41,10 @@ export default class LatexReferencesPlugin extends Plugin {
 
   private statusEl: HTMLElement | null = null;
   private detachLatexLive: () => void = () => {};
+  private manifestListeners = new Set<() => void>();
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollingActive = false;
+  private deployInFlight: Promise<{ ok: boolean; message: string }> | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -67,6 +82,9 @@ export default class LatexReferencesPlugin extends Plugin {
     window.addEventListener("keydown", handleKeydown, { capture: true });
     this.register(() => {
       window.removeEventListener("keydown", handleKeydown, { capture: true });
+    });
+    this.register(() => {
+      this.stopDeploymentPolling();
     });
 
     // Register Obsidian command for mathematical reference insertion (Option+L)
@@ -112,12 +130,33 @@ export default class LatexReferencesPlugin extends Plugin {
       name: "Manage mathematical reference snapshot",
       callback: async () => {
         const envs = await this.vaultIndexer.getEnvironments();
-        const publishedEnv = envs.find((e) => e.id === "def-group-homomorphism") || envs[0];
-        if (publishedEnv) {
-          new ApprovalModal(this.app, this, publishedEnv).open();
-        } else {
+        if (!envs.length) {
           new Notice("No mathematical environments found in vault.");
+          return;
         }
+
+        // 1. If cursor is inside/on a \gardenref{id}{...} in an active TeX editor, open that exact reference
+        const texView = this.getActiveTexEditorView();
+        if (texView && this.isLatexContext()) {
+          const refId = this.findGardenrefIdAtCursor(texView);
+          if (refId) {
+            const matched = envs.find((e) => e.id === refId);
+            if (matched) {
+              new ApprovalModal(this.app, this, matched).open();
+              return;
+            }
+          }
+        }
+
+        // 2. If cursor is inside a mathematical callout in a Markdown note, open that exact callout
+        const mdEnv = await this.findCalloutAtMarkdownCursor();
+        if (mdEnv) {
+          new ApprovalModal(this.app, this, mdEnv).open();
+          return;
+        }
+
+        // 3. Otherwise open searchable management picker
+        new ManageReferencePickerModal(this.app, this, envs).open();
       }
     });
 
@@ -155,10 +194,51 @@ export default class LatexReferencesPlugin extends Plugin {
         }
       })
     );
+
+    // Keep gardenrefs.tex in sync when opening .tex files so LaTeX Live always compiles safely
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file instanceof TFile && (file.extension === "tex" || file.extension === "sty") && this.settings.autoExportGardenrefs) {
+          void this.syncActiveGardenrefsTex(false);
+        }
+      })
+    );
+
+    // Resume verification polling for any references already in AWAITING_DEPLOY from an earlier push
+    this.app.workspace.onLayoutReady(() => {
+      if (this.settings.autoExportGardenrefs) {
+        void this.syncActiveGardenrefsTex(false);
+      }
+      const awaitingIds = Object.keys(this.referencesManifest.references || {}).filter(
+        (id) => getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.AWAITING_DEPLOY
+      );
+      if (awaitingIds.length > 0) {
+        this.startDeploymentPolling(awaitingIds, 1500);
+      }
+    });
   }
 
   onunload(): void {
+    this.stopDeploymentPolling();
     this.detachLatexLive();
+    this.manifestListeners.clear();
+  }
+
+  onManifestChanged(cb: () => void): () => void {
+    this.manifestListeners.add(cb);
+    return () => {
+      this.manifestListeners.delete(cb);
+    };
+  }
+
+  notifyManifestChanged(): void {
+    for (const cb of Array.from(this.manifestListeners)) {
+      try {
+        cb();
+      } catch (e) {
+        console.error("LaTeX References: manifest listener error", e);
+      }
+    }
   }
 
   /**
@@ -280,6 +360,41 @@ export default class LatexReferencesPlugin extends Plugin {
     return null;
   }
 
+  private findGardenrefIdAtCursor(view: EditorView): string | null {
+    try {
+      const head = view.state.selection.main.head;
+      const line = view.state.doc.lineAt(head);
+      const col = head - line.from;
+      const regex = /\\gardenref\{([a-zA-Z0-9-]+)\}/g;
+      let match: RegExpExecArray | null;
+      let fallbackId: string | null = null;
+      while ((match = regex.exec(line.text)) !== null) {
+        fallbackId = fallbackId || match[1];
+        const cmdStart = match.index;
+        // Include second braced argument if present on the same line
+        const rest = line.text.slice(cmdStart);
+        const fullMatch = rest.match(/^\\gardenref\{[a-zA-Z0-9-]+\}\{[^}]*\}/);
+        const cmdEnd = cmdStart + (fullMatch ? fullMatch[0].length : match[0].length);
+        if (col >= cmdStart && col <= cmdEnd) {
+          return match[1];
+        }
+      }
+      return fallbackId;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  private async findCalloutAtMarkdownCursor(): Promise<CalloutEnvironment | null> {
+    const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!mdView?.file || !mdView.editor) return null;
+
+    const text = mdView.editor.getValue();
+    const offset = mdView.editor.posToOffset(mdView.editor.getCursor());
+    const envs = scanEnvironments(text, mdView.file.path);
+    return envs.find((env) => offset >= env.start && offset <= env.end + 4) || null;
+  }
+
   /**
    * Opens the searchable reference picker for the given editor view.
    */
@@ -319,6 +434,15 @@ export default class LatexReferencesPlugin extends Plugin {
     }
   }
 
+  private async writeIfChanged(filePath: string, content: string): Promise<boolean> {
+    try {
+      const existing = await fs.readFile(filePath, "utf8");
+      if (existing === content) return false;
+    } catch (_) {}
+    await fs.writeFile(filePath, content, "utf8");
+    return true;
+  }
+
   /**
    * Exports the latest gardenrefs.tex mapping file into the current document's folder
    * and the canonical LaTeX course folder.
@@ -329,14 +453,14 @@ export default class LatexReferencesPlugin extends Plugin {
 
     const texContent = exportGardenrefsTex(this.referencesManifest);
     const activeFile = this.app.workspace.getActiveFile();
-    let updatedLocations: string[] = [];
+    const updatedLocations: string[] = [];
 
     // 1. Write in active file's directory if it is a TeX file
     if (activeFile && (activeFile.extension === "tex" || activeFile.extension === "sty")) {
       const activeFullPath = adapter.getFullPath(activeFile.path);
       const activeDir = path.dirname(activeFullPath);
       const targetFile = path.join(activeDir, "gardenrefs.tex");
-      await fs.writeFile(targetFile, texContent, "utf8");
+      await this.writeIfChanged(targetFile, texContent);
       updatedLocations.push(path.basename(activeDir));
     }
 
@@ -346,7 +470,7 @@ export default class LatexReferencesPlugin extends Plugin {
     try {
       const stat = await fs.stat(canonicalFullDir);
       if (stat.isDirectory()) {
-        await fs.writeFile(path.join(canonicalFullDir, "gardenrefs.tex"), texContent, "utf8");
+        await this.writeIfChanged(path.join(canonicalFullDir, "gardenrefs.tex"), texContent);
         if (!updatedLocations.includes("LaTeX")) updatedLocations.push("LaTeX");
       }
     } catch (_) {}
@@ -383,10 +507,45 @@ export default class LatexReferencesPlugin extends Plugin {
     await this.persistData();
   }
 
+  private normalizeLoadedManifest(raw: ReferencesManifest, fromDigitalGarden = false): ReferencesManifest {
+    const normalizedRefs: Record<string, ReferenceSnapshot> = {};
+    const validStatuses = new Set(Object.values(REFERENCE_STATUS));
+
+    for (const [id, ref] of Object.entries(raw.references || {})) {
+      if (!ref || !id) continue;
+      if (fromDigitalGarden) {
+        // Digital Garden JSON holds content snapshots only; do not assume live status without verification
+        normalizedRefs[id] = {
+          ...ref,
+          status: REFERENCE_STATUS.APPROVED_LOCAL,
+          publishedAt: null,
+          verifiedContentHash: ref.verifiedContentHash || null,
+          lastVerifiedAt: ref.lastVerifiedAt || null,
+          verificationError: null
+        };
+      } else {
+        const status = ref.status && validStatuses.has(ref.status)
+          ? ref.status
+          : REFERENCE_STATUS.APPROVED_LOCAL;
+        normalizedRefs[id] = {
+          ...ref,
+          status
+        };
+      }
+    }
+
+    return {
+      version: raw.version || 1,
+      baseUrl: (raw.baseUrl || this.settings.baseUrl || "https://obsidian.koltensserver.com").replace(/\/+$/, ""),
+      updatedAt: raw.updatedAt || new Date().toISOString(),
+      references: normalizedRefs
+    };
+  }
+
   async loadManifest(): Promise<void> {
     const data = await this.loadData();
     if (data && data.referencesManifest && Object.keys(data.referencesManifest.references || {}).length > 0) {
-      this.referencesManifest = data.referencesManifest;
+      this.referencesManifest = this.normalizeLoadedManifest(data.referencesManifest, false);
       return;
     }
 
@@ -400,7 +559,7 @@ export default class LatexReferencesPlugin extends Plugin {
         const content = await fs.readFile(gardenManifestPath, "utf8");
         const parsed = JSON.parse(content);
         if (parsed && parsed.references && Object.keys(parsed.references).length > 0) {
-          this.referencesManifest = parsed;
+          this.referencesManifest = this.normalizeLoadedManifest(parsed, true);
           await this.persistData();
           return;
         }
@@ -412,8 +571,12 @@ export default class LatexReferencesPlugin extends Plugin {
 
   async saveManifest(): Promise<void> {
     await this.persistData();
-    await this.syncManifestToDigitalGarden();
-    await this.syncActiveGardenrefsTex();
+    if (this.settings.autoSyncManifest) {
+      await this.syncManifestToDigitalGarden();
+    }
+    if (this.settings.autoExportGardenrefs) {
+      await this.syncActiveGardenrefsTex();
+    }
   }
 
   private async persistData(): Promise<void> {
@@ -432,75 +595,340 @@ export default class LatexReferencesPlugin extends Plugin {
 
     try {
       await fs.mkdir(path.dirname(targetFile), { recursive: true });
-      await fs.writeFile(targetFile, JSON.stringify(this.referencesManifest, null, 2), "utf8");
+      const cleanManifest = exportDigitalGardenManifest(this.referencesManifest);
+      const serialized = JSON.stringify(cleanManifest, null, 2) + "\n";
+      await this.writeIfChanged(targetFile, serialized);
     } catch (e) {
       console.warn("Could not sync manifest to Digital Garden repository:", e);
     }
   }
 
-  async deployManifestToDigitalGarden(commitMessage = "chore(references): sync published latex reference snapshots"): Promise<{ ok: boolean; message: string }> {
+  private runGit(repoPath: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+    const execEnv = {
+      ...process.env,
+      PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`
+    };
+    return new Promise((resolve, reject) => {
+      execFile("git", args, { cwd: repoPath, env: execEnv }, (err, stdout, stderr) => {
+        if (err) {
+          const detail = (stderr || stdout || err.message || "").trim();
+          reject(Object.assign(new Error(detail), { code: (err as any).code, stdout, stderr }));
+          return;
+        }
+        resolve({ stdout: stdout || "", stderr: stderr || "" });
+      });
+    });
+  }
+
+  private async markTargetsDeployFailed(message: string, targetId?: string): Promise<void> {
+    let changed = false;
+    for (const id of Object.keys(this.referencesManifest.references)) {
+      const status = getReferenceStatus(this.referencesManifest, id);
+      const isPending =
+        status === REFERENCE_STATUS.APPROVED_LOCAL ||
+        status === REFERENCE_STATUS.AWAITING_DEPLOY ||
+        status === REFERENCE_STATUS.DEPLOY_FAILED;
+      if (id === targetId || isPending) {
+        if (id === targetId && status === REFERENCE_STATUS.PUBLISHED) {
+          // Do not downgrade an already verified identical snapshot on transient git error
+          continue;
+        }
+        this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.DEPLOY_FAILED, {
+          verificationError: message
+        }).manifest;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await this.persistData();
+      await this.syncActiveGardenrefsTex();
+      this.notifyManifestChanged();
+    }
+  }
+
+  async deployManifestToDigitalGarden(
+    commitMessage = "chore(references): sync published latex reference snapshots",
+    targetId?: string
+  ): Promise<{ ok: boolean; message: string }> {
+    if (this.deployInFlight) {
+      return this.deployInFlight;
+    }
+
+    const work = this.executeDeployManifestToDigitalGarden(commitMessage, targetId);
+    this.deployInFlight = work;
+    try {
+      return await work;
+    } finally {
+      this.deployInFlight = null;
+    }
+  }
+
+  private async executeDeployManifestToDigitalGarden(
+    commitMessage: string,
+    targetId?: string
+  ): Promise<{ ok: boolean; message: string }> {
     const repoPath = this.settings.digitalGardenRepoPath;
     if (!repoPath) {
       return { ok: false, message: "Digital Garden repository path is not configured in settings." };
     }
 
+    const manifestRelative = this.settings.gardenManifestRelativePath || "src/site/_data/latexReferences.json";
+
     try {
-      await this.syncManifestToDigitalGarden();
+      // 1. Verify Digital Garden repo is on main
+      const branchRes = await this.runGit(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      const currentBranch = branchRes.stdout.trim();
+      if (currentBranch !== "main") {
+        const msg = `Digital Garden repo is on branch "${currentBranch}", expected "main". Switch to main before pushing.`;
+        await this.markTargetsDeployFailed(msg, targetId);
+        return { ok: false, message: msg };
+      }
 
-      const manifestRelative = this.settings.gardenManifestRelativePath || "src/site/_data/latexReferences.json";
-      const gitCmd = `git add "${manifestRelative}" && git commit -m "${commitMessage}" && git push origin main`;
+      // 2. Fetch remote main before pushing
+      try {
+        await this.runGit(repoPath, ["fetch", "origin", "main"]);
+      } catch (e) {
+        const msg = `Could not reach origin/main (${e instanceof Error ? e.message : String(e)}). Check your internet connection or Git credentials.`;
+        await this.markTargetsDeployFailed(msg, targetId);
+        return { ok: false, message: msg };
+      }
 
-      await new Promise<void>((resolve, reject) => {
-        exec(gitCmd, { cwd: repoPath }, (err, stdout, stderr) => {
-          if (err) {
-            if (stdout.includes("nothing to commit") || stderr.includes("nothing to commit")) {
-              resolve();
-              return;
-            }
-            reject(new Error(stderr || stdout || err.message));
-            return;
-          }
-          resolve();
-        });
-      });
-
-      // Update statuses of approved references to awaiting_deploy
-      for (const id of Object.keys(this.referencesManifest.references)) {
-        const ref = this.referencesManifest.references[id];
-        if (ref.status === REFERENCE_STATUS.APPROVED_LOCAL || ref.status === REFERENCE_STATUS.DEPLOY_FAILED) {
-          this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.AWAITING_DEPLOY).manifest;
+      // 3. Rebase cleanly if behind origin/main
+      const behindRes = await this.runGit(repoPath, ["rev-list", "--count", "HEAD..origin/main"]);
+      const behindCount = Number.parseInt(behindRes.stdout.trim(), 10) || 0;
+      if (behindCount > 0) {
+        try {
+          await this.runGit(repoPath, ["pull", "--rebase", "--autostash", "origin", "main"]);
+        } catch (e) {
+          try {
+            await this.runGit(repoPath, ["rebase", "--abort"]);
+          } catch (_) {}
+          const msg = `Failed to pull latest Digital Garden commits cleanly (${e instanceof Error ? e.message : String(e)}).`;
+          await this.markTargetsDeployFailed(msg, targetId);
+          return { ok: false, message: msg };
         }
       }
-      await this.persistData();
 
-      return { ok: true, message: "Pushed changes to Digital Garden repository. Vercel build triggered." };
+      // 4. Write clean Digital Garden manifest & stage it
+      await this.syncManifestToDigitalGarden();
+      await this.runGit(repoPath, ["add", "--", manifestRelative]);
+
+      // 5. Commit ONLY the manifest file if there are staged changes
+      let hasStagedChanges = false;
+      try {
+        await this.runGit(repoPath, ["diff", "--cached", "--quiet", "--", manifestRelative]);
+      } catch (_) {
+        hasStagedChanges = true;
+      }
+
+      if (hasStagedChanges) {
+        await this.runGit(repoPath, ["commit", "-m", commitMessage, "--", manifestRelative]);
+      }
+
+      // 6. Push if local main is ahead of origin/main
+      const aheadRes = await this.runGit(repoPath, ["rev-list", "--count", "origin/main..HEAD"]);
+      const aheadCount = Number.parseInt(aheadRes.stdout.trim(), 10) || 0;
+      if (aheadCount > 0) {
+        await this.runGit(repoPath, ["push", "origin", "main"]);
+      }
+
+      // 7. Mark pending / unverified references as awaiting_deploy and begin automatic live verification polling
+      const pendingIds: string[] = [];
+      for (const id of Object.keys(this.referencesManifest.references)) {
+        const status = getReferenceStatus(this.referencesManifest, id);
+        const shouldAwait =
+          status === REFERENCE_STATUS.APPROVED_LOCAL ||
+          status === REFERENCE_STATUS.DEPLOY_FAILED ||
+          status === REFERENCE_STATUS.AWAITING_DEPLOY ||
+          (id === targetId && !isPublished(this.referencesManifest, id));
+
+        if (shouldAwait) {
+          this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.AWAITING_DEPLOY, {
+            verificationError: null
+          }).manifest;
+          pendingIds.push(id);
+        }
+      }
+
+      await this.persistData();
+      await this.syncActiveGardenrefsTex();
+      this.notifyManifestChanged();
+
+      if (pendingIds.length > 0) {
+        this.startDeploymentPolling(pendingIds, INITIAL_POLL_DELAY_MS);
+      }
+
+      return {
+        ok: true,
+        message: "Pushed to Digital Garden. Verifying live URLs automatically…"
+      };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      const msg = e instanceof Error ? e.message : String(e);
+      await this.markTargetsDeployFailed(msg, targetId);
+      return { ok: false, message: msg };
     }
   }
 
-  async checkReferenceLiveStatus(id: string): Promise<{ live: boolean; status: number; message: string }> {
+  private actionableVerificationError(res: LiveVerifyResult, snapshot: ReferenceSnapshot): string {
+    if (res.status === 404 || res.kind === "not_found") {
+      if (!snapshot.publishedAt) {
+        return "Live URL returned HTTP 404 — not deployed to Digital Garden yet. Click Push to Digital Garden to publish.";
+      }
+      return "Live URL returned HTTP 404. Push to Digital Garden to republish this reference page.";
+    }
+    if (res.kind === "stale_content") {
+      return "Live page still serves an older snapshot while the updated build deploys. Retry verification shortly or push again.";
+    }
+    if (res.status === 0 || res.kind === "network_error") {
+      return `Could not reach ${snapshot.url} (${res.error || "network error"}). Check your internet connection.`;
+    }
+    return res.error || "Live verification failed.";
+  }
+
+  async checkReferenceLiveStatus(
+    id: string,
+    opts: { isBackgroundPoll?: boolean; isFinalPoll?: boolean } = {}
+  ): Promise<{ live: boolean; status: number; message: string }> {
     const snapshot = getSnapshot(this.referencesManifest, id);
     if (!snapshot) {
       return { live: false, status: 0, message: "Reference snapshot not found in manifest." };
     }
 
-    const res = await verifyLiveReference(snapshot.url, snapshot.title);
+    const res = await verifyLiveReference(snapshot.url, {
+      id: snapshot.id,
+      title: snapshot.title,
+      contentHash: snapshot.contentHash,
+      bustCache: true
+    });
+
     if (res.ok) {
       this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.PUBLISHED, {
-        publishedAt: new Date().toISOString()
+        publishedAt: snapshot.publishedAt || new Date().toISOString(),
+        verifiedContentHash: snapshot.contentHash,
+        liveUrlReachable: true,
+        verificationError: null
       }).manifest;
       await this.persistData();
+      await this.syncActiveGardenrefsTex();
+      this.notifyManifestChanged();
       return { live: true, status: res.status, message: `Reference is live at ${snapshot.url}` };
-    } else {
-      if (snapshot.status === REFERENCE_STATUS.AWAITING_DEPLOY) {
-        return { live: false, status: res.status, message: `Still awaiting deployment (${res.error})` };
+    }
+
+    const actionableError = this.actionableVerificationError(res, snapshot);
+
+    // Offline / network error handling: never downgrade an already verified Published reference
+    if (res.status === 0 || res.kind === "network_error") {
+      if (isPublished(this.referencesManifest, id)) {
+        return {
+          live: false,
+          status: 0,
+          message: "Network unreachable while checking live status — keeping verified Published state."
+        };
+      }
+      if (opts.isBackgroundPoll && !opts.isFinalPoll) {
+        return { live: false, status: 0, message: actionableError };
       }
       this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.DEPLOY_FAILED, {
-        verificationError: res.error
+        kind: res.kind,
+        verificationError: actionableError,
+        liveUrlReachable: Boolean(snapshot.publishedAt && snapshot.liveUrlReachable !== false)
       }).manifest;
       await this.persistData();
-      return { live: false, status: res.status, message: `Verification failed: ${res.error}` };
+      await this.syncActiveGardenrefsTex();
+      this.notifyManifestChanged();
+      return { live: false, status: 0, message: actionableError };
     }
+
+    // During active background deployment polling, keep AWAITING_DEPLOY while Vercel builds unless final attempt
+    if (opts.isBackgroundPoll && !opts.isFinalPoll && getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.AWAITING_DEPLOY) {
+      return { live: false, status: res.status, message: `Deploying (${actionableError})` };
+    }
+
+    this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.DEPLOY_FAILED, {
+      httpStatus: res.status,
+      kind: res.kind,
+      verificationError: actionableError
+    }).manifest;
+    await this.persistData();
+    await this.syncActiveGardenrefsTex();
+    this.notifyManifestChanged();
+    return { live: false, status: res.status, message: actionableError };
+  }
+
+  private stopDeploymentPolling(): void {
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.pollingActive = false;
+  }
+
+  private startDeploymentPolling(targetIds: string[], initialDelayMs = INITIAL_POLL_DELAY_MS): void {
+    this.stopDeploymentPolling();
+    const tracked = new Set(targetIds);
+    this.pollingActive = true;
+    let attempt = 0;
+
+    const runTick = async () => {
+      if (!this.pollingActive) return;
+      attempt += 1;
+
+      // Include any current awaiting_deploy entries as well
+      for (const id of Object.keys(this.referencesManifest.references || {})) {
+        if (getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.AWAITING_DEPLOY) {
+          tracked.add(id);
+        }
+      }
+
+      const pendingIds = Array.from(tracked).filter(
+        (id) => getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.AWAITING_DEPLOY
+      );
+
+      if (pendingIds.length === 0) {
+        this.stopDeploymentPolling();
+        return;
+      }
+
+      const isFinalPoll = attempt >= MAX_POLL_ATTEMPTS;
+      const newlyPublished: string[] = [];
+      const timedOutIds: string[] = [];
+      let stillPending = false;
+
+      for (const id of pendingIds) {
+        const res = await this.checkReferenceLiveStatus(id, {
+          isBackgroundPoll: true,
+          isFinalPoll
+        });
+        if (res.live) {
+          newlyPublished.push(id);
+        } else if (getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.AWAITING_DEPLOY) {
+          stillPending = true;
+        } else if (isFinalPoll && getReferenceStatus(this.referencesManifest, id) === REFERENCE_STATUS.DEPLOY_FAILED) {
+          timedOutIds.push(id);
+        }
+      }
+
+      if (newlyPublished.length > 0) {
+        const labelList = newlyPublished.map((id) => `^${id}`).join(", ");
+        new Notice(`Reference${newlyPublished.length > 1 ? "s" : ""} live on Digital Garden: ${labelList}`, 5000);
+      }
+
+      if (timedOutIds.length > 0) {
+        new Notice(`Deployment verification failed for ${timedOutIds.map((id) => `^${id}`).join(", ")} — open modal for details.`, 7000);
+      }
+
+      if (isFinalPoll || !stillPending) {
+        this.stopDeploymentPolling();
+        return;
+      }
+
+      this.pollTimer = setTimeout(() => {
+        void runTick();
+      }, POLL_INTERVAL_MS);
+    };
+
+    this.pollTimer = setTimeout(() => {
+      void runTick();
+    }, initialDelayMs);
   }
 }

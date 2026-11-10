@@ -35,10 +35,14 @@ test('Independence 2: Moving or renaming source Markdown note preserves stable p
   const initialEnvs = core.scanEnvironments(initialNote, 'Original/OldPath/Theory.md');
   assert.equal(initialEnvs[0].id, 'thm-unique-factorization');
 
-  // Approved in manifest
+  // Approved locally first -> safe withholding from PDF links before verification
   let manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
-  const { manifest: m1, snapshot: s1 } = core.approveSnapshot(manifest, initialEnvs[0]);
+  const { manifest: mLocal, snapshot: s1 } = core.approveSnapshot(manifest, initialEnvs[0]);
   assert.equal(s1.url, 'https://obsidian.koltensserver.com/latex-references/thm-unique-factorization/');
+  assert.doesNotMatch(core.exportGardenrefsTex(mLocal), /\\declaregardenref\{thm-unique-factorization\}/);
+
+  // Verified live -> Published
+  const { manifest: m1 } = core.updateReferenceStatus(mLocal, 'thm-unique-factorization', core.REFERENCE_STATUS.PUBLISHED);
 
   // Note moves to a new folder and filename
   const movedNote = initialNote; // identical content in new file
@@ -210,10 +214,12 @@ test('Independence 7: Deleted targets in vault preserve frozen manifest snapshot
     body: 'Every symmetric matrix is orthogonally diagonalizable.',
     filePath: 'LinearAlgebra/Spectral.md'
   };
-  const { manifest: m1 } = core.approveSnapshot(manifest, env);
+  const { manifest: mLocal } = core.approveSnapshot(manifest, env);
+  const { manifest: m1 } = core.updateReferenceStatus(mLocal, 'thm-spectral-theorem', core.REFERENCE_STATUS.PUBLISHED);
 
-  // Target file is deleted from vault (indexer would not find it), but manifest preserves it
+  // Target file is deleted from vault (indexer would not find it), but published snapshot preserves offline TeX compilation
   assert.equal(core.isApproved(m1, 'thm-spectral-theorem'), true);
+  assert.equal(core.isPublished(m1, 'thm-spectral-theorem'), true);
   const texDef = core.exportGardenrefsTex(m1);
   assert.match(texDef, /\\declaregardenref\{thm-spectral-theorem\}/);
 });

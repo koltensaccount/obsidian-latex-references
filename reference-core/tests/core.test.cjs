@@ -111,7 +111,7 @@ test('buildLatexRefCommand creates valid \\gardenref command and sanitizes speci
   assert.equal(cmdMultiline, '\\gardenref{def-group-homomorphism}{homomorphism mapping}');
 });
 
-test('manifest 5-state publishing lifecycle and status transitions', () => {
+test('manifest 5-state publishing lifecycle, status labels, and strict live-link safety', () => {
   const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
   const item = {
     id: 'def-group-homomorphism',
@@ -121,28 +121,113 @@ test('manifest 5-state publishing lifecycle and status transitions', () => {
     filePath: 'School/MATH4281.md'
   };
 
-  // 1. Initial local approval
+  // 0. Unpublished state
+  assert.equal(core.getReferenceStatus(manifest, item.id), core.REFERENCE_STATUS.UNAPPROVED);
+  assert.equal(core.getStatusLabel(core.REFERENCE_STATUS.UNAPPROVED), 'Unpublished');
+  assert.equal(core.isPublished(manifest, item.id), false);
+
+  // 1. Initial local approval -> NOT published & excluded from gardenrefs.tex (no 404 PDF links!)
   const { manifest: m1, snapshot: s1 } = core.approveSnapshot(manifest, item);
   assert.equal(s1.status, core.REFERENCE_STATUS.APPROVED_LOCAL);
   assert.equal(s1.publishedAt, null);
+  assert.equal(core.getReferenceStatus(m1, item.id), core.REFERENCE_STATUS.APPROVED_LOCAL);
+  assert.equal(core.getStatusLabel(core.getReferenceStatus(m1, item.id)), 'Approved locally');
+  assert.equal(core.isApproved(m1, item.id), true);
+  assert.equal(core.isPublished(m1, item.id), false);
+  assert.equal(core.canRenderLiveLink(s1), false);
+  assert.doesNotMatch(core.exportGardenrefsTex(m1), /\\declaregardenref\{def-group-homomorphism\}/);
 
-  // 2. Transition to awaiting deployment (git commit/push in progress)
+  // 2. Transition to awaiting deployment -> still NOT published & still excluded until verified
   const { manifest: m2, snapshot: s2 } = core.updateReferenceStatus(m1, item.id, core.REFERENCE_STATUS.AWAITING_DEPLOY);
   assert.equal(s2.status, core.REFERENCE_STATUS.AWAITING_DEPLOY);
+  assert.equal(core.getStatusLabel(s2.status), 'Deploying');
+  assert.equal(core.isPublished(m2, item.id), false);
+  assert.equal(core.canRenderLiveLink(s2), false);
+  assert.doesNotMatch(core.exportGardenrefsTex(m2), /\\declaregardenref\{def-group-homomorphism\}/);
 
-  // 3. Deployment failure
+  // 3. Deployment failure -> Failed status & excluded from PDF links
   const { manifest: m3, snapshot: s3 } = core.updateReferenceStatus(m2, item.id, core.REFERENCE_STATUS.DEPLOY_FAILED, {
+    httpStatus: 404,
+    kind: 'not_found',
     verificationError: 'HTTP 404 Not Found'
   });
   assert.equal(s3.status, core.REFERENCE_STATUS.DEPLOY_FAILED);
+  assert.equal(core.getStatusLabel(s3.status), 'Failed');
   assert.equal(s3.verificationError, 'HTTP 404 Not Found');
+  assert.equal(s3.liveUrlReachable, false);
+  assert.equal(core.canRenderLiveLink(s3), false);
 
-  // 4. Successful publication
+  // 4. Successful publication -> Published status & emitted in gardenrefs.tex
   const { manifest: m4, snapshot: s4 } = core.updateReferenceStatus(m3, item.id, core.REFERENCE_STATUS.PUBLISHED, {
     publishedAt: new Date().toISOString()
   });
   assert.equal(s4.status, core.REFERENCE_STATUS.PUBLISHED);
-  assert.ok(s4.publishedAt);
+  assert.equal(core.getStatusLabel(s4.status), 'Published');
+  assert.equal(s4.verifiedContentHash, s4.contentHash);
+  assert.equal(s4.liveUrlReachable, true);
+  assert.equal(core.isPublished(m4, item.id), true);
+  assert.equal(core.canRenderLiveLink(s4), true);
+  assert.match(core.exportGardenrefsTex(m4), /\\declaregardenref\{def-group-homomorphism\}/);
+});
+
+test('updating a published snapshot invalidates stale Published label while preserving existing live PDF link', () => {
+  const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  const item = {
+    id: 'def-isomorphism',
+    type: 'definition',
+    title: 'Isomorphism',
+    body: 'A bijective homomorphism.',
+    filePath: 'School/MATH4281 Exam 1 Cheat Sheet.md'
+  };
+
+  const { manifest: m1 } = core.approveSnapshot(manifest, item, { status: core.REFERENCE_STATUS.PUBLISHED });
+  assert.equal(core.isPublished(m1, item.id), true);
+  const v1Hash = m1.references[item.id].contentHash;
+
+  // User edits definition and clicks Update Snapshot
+  const updatedItem = { ...item, body: 'A bijective group homomorphism $\\varphi: G \\to G\'$.' };
+  const { manifest: m2, snapshot: s2 } = core.approveSnapshot(m1, updatedItem);
+
+  // Status immediately reverts to Approved locally (never shows stale Published!)
+  assert.equal(core.getReferenceStatus(m2, item.id), core.REFERENCE_STATUS.APPROVED_LOCAL);
+  assert.equal(core.isPublished(m2, item.id), false);
+  assert.equal(s2.verifiedContentHash, v1Hash);
+  assert.notEqual(s2.contentHash, v1Hash);
+
+  // Previous verified URL remains safe to link while update awaits deploy
+  assert.equal(core.canRenderLiveLink(s2), true);
+  assert.match(core.exportGardenrefsTex(m2), /\\declaregardenref\{def-isomorphism\}/);
+
+  // Edge case: manually loaded snapshot where status was 'published' but verifiedContentHash mismatches contentHash
+  const tampered = {
+    ...m2,
+    references: {
+      [item.id]: {
+        ...s2,
+        status: core.REFERENCE_STATUS.PUBLISHED
+      }
+    }
+  };
+  assert.equal(core.getReferenceStatus(tampered, item.id), core.REFERENCE_STATUS.APPROVED_LOCAL);
+  assert.equal(core.isPublished(tampered, item.id), false);
+
+  // Edge case: snapshot with missing status never defaults to Published
+  const missingStatus = {
+    ...m1,
+    references: {
+      [item.id]: {
+        id: item.id,
+        type: 'definition',
+        title: 'Isomorphism',
+        body: 'Body',
+        url: 'https://obsidian.koltensserver.com/latex-references/def-isomorphism/',
+        contentHash: 'abc123'
+      }
+    }
+  };
+  assert.equal(core.getReferenceStatus(missingStatus, item.id), core.REFERENCE_STATUS.APPROVED_LOCAL);
+  assert.equal(core.isPublished(missingStatus, item.id), false);
+  assert.equal(core.canRenderLiveLink(missingStatus.references[item.id]), false);
 });
 
 test('stable identity collision detection vs renamed/moved note handling', () => {
@@ -189,9 +274,10 @@ test('stable identity collision detection vs renamed/moved note handling', () =>
   assert.equal(preserved.sourceFile, 'Algebra/Groups.md');
 });
 
-test('manifest lifecycle: approve, check, drift detection, and unpublish', () => {
+test('manifest lifecycle: approve, publish, drift detection, exportDigitalGardenManifest, and unpublish', () => {
   const manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
   assert.equal(core.isApproved(manifest, 'def-test'), false);
+  assert.equal(core.isPublished(manifest, 'def-test'), false);
 
   const item = {
     id: 'def-group-homomorphism',
@@ -203,6 +289,7 @@ test('manifest lifecycle: approve, check, drift detection, and unpublish', () =>
 
   const { manifest: m1, snapshot } = core.approveSnapshot(manifest, item);
   assert.equal(core.isApproved(m1, 'def-group-homomorphism'), true);
+  assert.equal(core.isPublished(m1, 'def-group-homomorphism'), false);
   assert.equal(snapshot.url, 'https://obsidian.koltensserver.com/latex-references/def-group-homomorphism/');
   assert.ok(snapshot.contentHash);
 
@@ -211,14 +298,95 @@ test('manifest lifecycle: approve, check, drift detection, and unpublish', () =>
   const modifiedItem = { ...item, body: 'A modified definition body.' };
   assert.equal(core.detectDrift(snapshot, modifiedItem), true);
 
-  // Export to TeX
-  const texDef = core.exportGardenrefsTex(m1);
+  // Export clean Digital Garden manifest (strips client polling fields)
+  const dgManifest = core.exportDigitalGardenManifest(m1);
+  assert.equal(dgManifest.references['def-group-homomorphism'].contentHash, snapshot.contentHash);
+  assert.equal('status' in dgManifest.references['def-group-homomorphism'], false);
+  assert.equal('lastVerifiedAt' in dgManifest.references['def-group-homomorphism'], false);
+
+  // Export to TeX before vs after verification
+  assert.doesNotMatch(core.exportGardenrefsTex(m1), /\\declaregardenref\{def-group-homomorphism\}/);
+
+  const { manifest: mPub } = core.updateReferenceStatus(m1, 'def-group-homomorphism', core.REFERENCE_STATUS.PUBLISHED);
+  const texDef = core.exportGardenrefsTex(mPub);
   assert.match(texDef, /\\declaregardenref\{def-group-homomorphism\}\{https:\/\/obsidian\.koltensserver\.com\/latex-references\/def-group-homomorphism\/\}/);
 
   // Unpublish
-  const { manifest: m2, removed } = core.unpublishSnapshot(m1, 'def-group-homomorphism');
+  const { manifest: m2, removed } = core.unpublishSnapshot(mPub, 'def-group-homomorphism');
   assert.equal(removed, true);
   assert.equal(core.isApproved(m2, 'def-group-homomorphism'), false);
+  assert.equal(core.isPublished(m2, 'def-group-homomorphism'), false);
+});
+
+test('verifyLiveReference checks HTTP 404, soft-404, id mismatch, stale hash, title escaping, and valid live match', async () => {
+  const url = 'https://obsidian.koltensserver.com/latex-references/def-isomorphism/';
+
+  // 1. HTTP 404
+  const r404 = await core.verifyLiveReference(url, {
+    id: 'def-isomorphism',
+    title: 'Isomorphism',
+    contentHash: 'c316dd7ec539ead1',
+    fetchImpl: async (reqUrl) => {
+      assert.match(reqUrl, /\?_verify=\d+/);
+      return { ok: false, status: 404, statusText: 'Not Found', text: async () => '' };
+    }
+  });
+  assert.equal(r404.ok, false);
+  assert.equal(r404.status, 404);
+  assert.equal(r404.kind, 'not_found');
+
+  // 2. Soft 404 (HTTP 200 rendering dg-not-found-page)
+  const rSoft404 = await core.verifyLiveReference(url, {
+    id: 'def-isomorphism',
+    title: 'Isomorphism',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<html><title>Page not found</title><body class="dg-not-found-page">Page not found</body></html>'
+    })
+  });
+  assert.equal(rSoft404.ok, false);
+  assert.equal(rSoft404.kind, 'not_found');
+
+  // 3. Stale snapshot hash while Vercel builds update
+  const rStale = await core.verifyLiveReference(url, {
+    id: 'def-isomorphism',
+    title: 'Isomorphism',
+    contentHash: 'newhash123456789',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<main class="latex-ref-card" data-reference-id="def-isomorphism" data-content-hash="oldhash123456789"><div class="callout-title-inner">Isomorphism</div></main>'
+    })
+  });
+  assert.equal(rStale.ok, false);
+  assert.equal(rStale.kind, 'stale_content');
+
+  // 4. HTML-escaped title & matching hash
+  const rValid = await core.verifyLiveReference(url, {
+    id: 'def-abel',
+    title: "Lagrange's Theorem & Order",
+    contentHash: 'abc123def4567890',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<main class="latex-ref-card" id="ref-def-abel" data-reference-id="def-abel" data-content-hash="abc123def4567890"><div class="callout-title-inner">Lagrange&#39;s Theorem &amp; Order</div></main>'
+    })
+  });
+  assert.equal(rValid.ok, true);
+  assert.equal(rValid.kind, 'verified');
+  assert.equal(rValid.contentHash, 'abc123def4567890');
+
+  // 5. Network failure (offline)
+  const rNet = await core.verifyLiveReference(url, {
+    id: 'def-isomorphism',
+    fetchImpl: async () => {
+      throw new Error('fetch failed');
+    }
+  });
+  assert.equal(rNet.ok, false);
+  assert.equal(rNet.status, 0);
+  assert.equal(rNet.kind, 'network_error');
 });
 
 test('parses real vault excerpt: MATH4281 Exam 1 Cheat Sheet Group Homomorphism', () => {

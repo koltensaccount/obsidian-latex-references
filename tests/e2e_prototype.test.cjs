@@ -65,18 +65,52 @@ test('End-to-End Prototype: Isolated Real Homework + Automatic Setup + Isolated 
 
   fs.writeFileSync(hw4Path, hw4Content, 'utf8');
 
-  // 4. Manifest lifecycle: Approve def-group-homomorphism into isolated manifest
+  // 4. Manifest lifecycle: Approve def-group-homomorphism locally -> verify NOT emitted yet
   let manifest = core.createEmptyManifest('https://obsidian.koltensserver.com');
-  const { manifest: approvedManifest, snapshot } = core.approveSnapshot(manifest, homoEnv, {
+  const { manifest: approvedLocalManifest, snapshot } = core.approveSnapshot(manifest, homoEnv, {
     baseUrl: 'https://obsidian.koltensserver.com',
     status: core.REFERENCE_STATUS.APPROVED_LOCAL
   });
-  assert.equal(core.isApproved(approvedManifest, 'def-group-homomorphism'), true);
-  assert.equal(core.isApproved(approvedManifest, 'def-unpublished-concept'), false);
+  assert.equal(core.isApproved(approvedLocalManifest, 'def-group-homomorphism'), true);
+  assert.equal(core.isPublished(approvedLocalManifest, 'def-group-homomorphism'), false);
+  assert.equal(core.isApproved(approvedLocalManifest, 'def-unpublished-concept'), false);
   assert.equal(snapshot.status, 'approved_local');
 
-  // 5. Generate gardenrefs.tex in isolated workspace
+  // Verify approved_local omits dead hyperlink from gardenrefs.tex & compiled PDF before live verification
+  fs.writeFileSync(path.join(TEST_WORK_DIR, 'gardenrefs.tex'), core.exportGardenrefsTex(approvedLocalManifest), 'utf8');
+  assert.doesNotMatch(core.exportGardenrefsTex(approvedLocalManifest), /\\declaregardenref\{def-group-homomorphism\}/);
+
+  const buildDir = path.join(TEST_WORK_DIR, '.latex-build', 'MATH4281_HW4');
+  fs.mkdirSync(buildDir, { recursive: true });
+  execFileSync('/Library/TeX/texbin/latexmk', [
+    '-pdf',
+    '-interaction=nonstopmode',
+    '-file-line-error',
+    '-synctex=1',
+    '--jobname=MATH4281_HW4',
+    '-usepretex=\\pdfcompresslevel=0\\pdfobjcompresslevel=0\\RequirePackage{etoolbox}\\AtEndPreamble{\\RequirePackage{gardenref}}',
+    `-outdir=${buildDir}`,
+    'MATH4281_HW4.tex'
+  ], {
+    cwd: TEST_WORK_DIR,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `/Library/TeX/texbin:/usr/local/bin:${process.env.PATH}`,
+      TEXINPUTS: `.:${LATEX_DIR}//:`
+    }
+  });
+  const localOnlyPdf = fs.readFileSync(path.join(buildDir, 'MATH4281_HW4.pdf'), 'utf8');
+  assert.doesNotMatch(localOnlyPdf, /latex-references\/def-group-homomorphism/, 'Approved-local reference must NOT emit clickable PDF link before live verification');
+
+  // 5. Transition to PUBLISHED once Digital Garden deploys & verifies -> generate gardenrefs.tex
+  const { manifest: approvedManifest } = core.updateReferenceStatus(
+    approvedLocalManifest,
+    'def-group-homomorphism',
+    core.REFERENCE_STATUS.PUBLISHED
+  );
   const gardenrefsTex = core.exportGardenrefsTex(approvedManifest);
+  assert.match(gardenrefsTex, /\\declaregardenref\{def-group-homomorphism\}/);
   fs.writeFileSync(path.join(TEST_WORK_DIR, 'gardenrefs.tex'), gardenrefsTex, 'utf8');
 
   // 6. Test Digital Garden Eleventy build with ISOLATED manifest override
@@ -84,7 +118,7 @@ test('End-to-End Prototype: Isolated Real Homework + Automatic Setup + Isolated 
   const realManifestPath = path.join(GARDEN_REPO_DIR, 'src/site/_data/latexReferences.json');
   const realManifestBefore = fs.existsSync(realManifestPath) ? fs.readFileSync(realManifestPath, 'utf8') : null;
 
-  fs.writeFileSync(TEST_MANIFEST_FILE, JSON.stringify(approvedManifest, null, 2), 'utf8');
+  fs.writeFileSync(TEST_MANIFEST_FILE, JSON.stringify(core.exportDigitalGardenManifest(approvedManifest), null, 2), 'utf8');
 
   execFileSync('npx', ['@11ty/eleventy'], {
     cwd: GARDEN_REPO_DIR,
@@ -100,18 +134,16 @@ test('End-to-End Prototype: Isolated Real Homework + Automatic Setup + Isolated 
   const realManifestAfter = fs.existsSync(realManifestPath) ? fs.readFileSync(realManifestPath, 'utf8') : null;
   assert.equal(realManifestBefore, realManifestAfter, 'Real Digital Garden manifest must not be modified by tests');
 
-  // Verify Eleventy output was generated
+  // Verify Eleventy output was generated with identity & contentHash attributes
   const generatedHtmlPath = path.join(GARDEN_REPO_DIR, 'dist/latex-references/def-group-homomorphism/index.html');
   assert.ok(fs.existsSync(generatedHtmlPath), 'Digital Garden must generate reference page');
   const htmlContent = fs.readFileSync(generatedHtmlPath, 'utf8');
   assert.match(htmlContent, /Group Homomorphism/);
-  assert.match(htmlContent, /def-group-homomorphism/);
+  assert.match(htmlContent, /data-reference-id="def-group-homomorphism"/);
+  assert.match(htmlContent, new RegExp(`data-content-hash="${snapshot.contentHash}"`));
 
-  // 7. Compile real homework document with latexmk using AUTOMATIC package setup
-  const buildDir = path.join(TEST_WORK_DIR, '.latex-build', 'MATH4281_HW4');
-  fs.mkdirSync(buildDir, { recursive: true });
-
-  const latexmkOutput = execFileSync('/Library/TeX/texbin/latexmk', [
+  // 7. Compile real homework document with latexmk after PUBLISHED using AUTOMATIC package setup
+  execFileSync('/Library/TeX/texbin/latexmk', [
     '-pdf',
     '-interaction=nonstopmode',
     '-file-line-error',
