@@ -257,6 +257,17 @@
   padding: 0;
 }
 
+.latex-ref-actions .setting-item-info {
+  display: none;
+}
+
+.latex-ref-actions .setting-item-control {
+  width: 100%;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* Technical Details Section */
 .latex-ref-tech-details {
   margin-top: 1rem;
@@ -305,4 +316,153 @@
 .latex-ref-tech-val a {
   color: var(--text-accent);
   text-decoration: underline;
+}
+
+/* Unpublish Global Button vs Document Remove Link Section */
+.latex-ref-unpublish-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.latex-ref-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  width: 14px;
+  height: 14px;
+}
+
+.latex-ref-btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.latex-ref-doc-link-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.latex-ref-doc-link-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.latex-ref-doc-link-title {
+  font-size: var(--font-ui-small, 12px);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.latex-ref-doc-link-desc {
+  font-size: var(--font-ui-smaller, 11px);
+  color: var(--text-muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.latex-ref-doc-link-control.setting-item {
+  border: none;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.latex-ref-doc-link-control .setting-item-info {
+  display: none;
+}
+
+/* Missing Target Explainer inside ApprovalModal */
+.latex-ref-missing-target-box {
+  padding: 0.85rem 1rem;
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.latex-ref-missing-target-box p {
+  margin: 0 0 0.55rem;
+}
+
+.latex-ref-missing-target-box p:last-child {
+  margin-bottom: 0;
+}
+
+.latex-ref-missing-display-line code {
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+  background: var(--background-secondary);
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.latex-ref-missing-compile-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 12px);
+}
+
+/* ==========================================================================
+   CodeMirror 6 Interactive \gardenref Decorations inside LaTeX Live
+   ========================================================================== */
+.cm-editor .cm-gardenref {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(var(--color-accent-rgb, 50, 152, 220), 0.65);
+  border-radius: 3px;
+  transition: background-color 120ms ease;
+}
+
+.cm-editor .cm-gardenref:hover {
+  cursor: pointer;
+  background-color: rgba(var(--color-accent-rgb, 50, 152, 220), 0.1);
+}
+
+.cm-editor .cm-gardenref.is-published {
+  text-decoration-color: rgba(72, 199, 116, 0.72);
+}
+
+.cm-editor .cm-gardenref.is-published:hover {
+  background-color: rgba(72, 199, 116, 0.12);
+}
+
+.cm-editor .cm-gardenref.is-approved_local {
+  text-decoration-color: rgba(217, 119, 6, 0.75);
+}
+
+.cm-editor .cm-gardenref.is-approved_local:hover {
+  background-color: rgba(217, 119, 6, 0.12);
+}
+
+.cm-editor .cm-gardenref.is-awaiting_deploy {
+  text-decoration-color: rgba(50, 152, 220, 0.78);
+}
+
+.cm-editor .cm-gardenref.is-awaiting_deploy:hover {
+  background-color: rgba(50, 152, 220, 0.12);
+}
+
+.cm-editor .cm-gardenref.is-deploy_failed {
+  text-decoration-color: rgba(220, 20, 60, 0.8);
+}
+
+.cm-editor .cm-gardenref.is-deploy_failed:hover {
+  background-color: rgba(220, 20, 60, 0.12);
+}
+
+.cm-editor .cm-gardenref.is-unapproved {
+  text-decoration-color: var(--text-faint);
+}
+
+.cm-editor .cm-gardenref.is-unapproved:hover {
+  background-color: var(--background-modifier-hover);
 }

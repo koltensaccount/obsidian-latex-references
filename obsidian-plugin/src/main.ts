@@ -6,6 +6,7 @@ import { Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { ManageReferencePickerModal, ReferencePickerModal } from "./references/picker";
 import { ApprovalModal } from "./references/approval-modal";
+import { createLatexReferenceInteractiveExtension } from "./references/latex-ref-extension";
 import { VaultCalloutIndexer } from "./references/vault-indexer";
 import { DEFAULT_SETTINGS, LatexReferencesSettingTab } from "./settings/settings";
 import type { LatexReferencesSettings } from "./types";
@@ -13,15 +14,18 @@ import {
   createEmptyManifest,
   exportDigitalGardenManifest,
   exportGardenrefsTex,
+  findLatexReferenceForSelection,
   getReferenceStatus,
   getSnapshot,
   isPublished,
+  normalizeUrl,
   scanEnvironments,
   updateReferenceStatus,
   verifyLiveReference,
   REFERENCE_STATUS,
   type CalloutEnvironment,
   type LiveVerifyResult,
+  type ParsedLatexReference,
   type ReferenceSnapshot,
   type ReferencesManifest
 } from "../../reference-core/src/index";
@@ -129,23 +133,21 @@ export default class LatexReferencesPlugin extends Plugin {
       id: "manage-reference-snapshot",
       name: "Manage mathematical reference snapshot",
       callback: async () => {
+        // 1. If cursor/selection is inside a \gardenref{id}{...} in an active TeX editor, open that exact reference
+        const texView = this.getActiveTexEditorView();
+        if (texView && this.isLatexContext()) {
+          const sel = texView.state.selection.main;
+          const parsedRef = findLatexReferenceForSelection(texView.state.doc.toString(), sel.from, sel.to);
+          if (parsedRef) {
+            await this.openModalForExistingReference(texView, parsedRef);
+            return;
+          }
+        }
+
         const envs = await this.vaultIndexer.getEnvironments();
         if (!envs.length) {
           new Notice("No mathematical environments found in vault.");
           return;
-        }
-
-        // 1. If cursor is inside/on a \gardenref{id}{...} in an active TeX editor, open that exact reference
-        const texView = this.getActiveTexEditorView();
-        if (texView && this.isLatexContext()) {
-          const refId = this.findGardenrefIdAtCursor(texView);
-          if (refId) {
-            const matched = envs.find((e) => e.id === refId);
-            if (matched) {
-              new ApprovalModal(this.app, this, matched).open();
-              return;
-            }
-          }
         }
 
         // 2. If cursor is inside a mathematical callout in a Markdown note, open that exact callout
@@ -178,6 +180,14 @@ export default class LatexReferencesPlugin extends Plugin {
     });
 
     // Vault listeners to keep callout index updated
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof TFile && file.extension === "md") {
+          void this.vaultIndexer.updateFileIndex(file).then(() => this.updateStatusBar());
+        }
+      })
+    );
+
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile && file.extension === "md") {
@@ -243,38 +253,41 @@ export default class LatexReferencesPlugin extends Plugin {
 
   /**
    * Builds the CodeMirror 6 extension that binds Alt+L (Option+L on macOS)
-   * to open the mathematical reference picker popup.
-   * Uses highest precedence with both keymap and DOM event handler to guarantee instant response.
+   * to open the mathematical reference picker popup, plus non-disruptive click interaction
+   * on existing \gardenref{id}{display-text} commands.
    */
   createReferenceExtension(): Extension {
-    return Prec.highest([
-      keymap.of([
-        {
-          key: "Alt-l",
-          mac: "Alt-l",
-          run: (view) => {
-            void this.triggerReferencePicker(view);
-            return true;
+    return [
+      Prec.highest([
+        keymap.of([
+          {
+            key: "Alt-l",
+            mac: "Alt-l",
+            run: (view) => {
+              void this.triggerReferencePicker(view);
+              return true;
+            }
           }
-        }
+        ]),
+        EditorView.domEventHandlers({
+          keydown: (event, view) => {
+            if (
+              event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")
+            ) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              void this.triggerReferencePicker(view);
+              return true;
+            }
+            return false;
+          }
+        })
       ]),
-      EditorView.domEventHandlers({
-        keydown: (event, view) => {
-          if (
-            event.altKey &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            (event.key === "l" || event.key === "L" || event.code === "KeyL" || event.key === "¬")
-          ) {
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            void this.triggerReferencePicker(view);
-            return true;
-          }
-          return false;
-        }
-      })
-    ]);
+      createLatexReferenceInteractiveExtension(this)
+    ];
   }
 
   /**
@@ -360,29 +373,63 @@ export default class LatexReferencesPlugin extends Plugin {
     return null;
   }
 
-  private findGardenrefIdAtCursor(view: EditorView): string | null {
-    try {
-      const head = view.state.selection.main.head;
-      const line = view.state.doc.lineAt(head);
-      const col = head - line.from;
-      const regex = /\\gardenref\{([a-zA-Z0-9-]+)\}/g;
-      let match: RegExpExecArray | null;
-      let fallbackId: string | null = null;
-      while ((match = regex.exec(line.text)) !== null) {
-        fallbackId = fallbackId || match[1];
-        const cmdStart = match.index;
-        // Include second braced argument if present on the same line
-        const rest = line.text.slice(cmdStart);
-        const fullMatch = rest.match(/^\\gardenref\{[a-zA-Z0-9-]+\}\{[^}]*\}/);
-        const cmdEnd = cmdStart + (fullMatch ? fullMatch[0].length : match[0].length);
-        if (col >= cmdStart && col <= cmdEnd) {
-          return match[1];
-        }
-      }
-      return fallbackId;
-    } catch (_) {
-      return null;
+  async openModalForExistingReference(view: EditorView, ref: ParsedLatexReference): Promise<void> {
+    const envs = await this.vaultIndexer.getEnvironments();
+    const matched = envs.find((e) => e.id === ref.id);
+    if (matched) {
+      new ApprovalModal(this.app, this, {
+        target: matched,
+        linkContext: { editorView: view, ref }
+      }).open();
+      return;
     }
+
+    const snapshot = getSnapshot(this.referencesManifest, ref.id);
+    if (snapshot) {
+      const syntheticEnv: CalloutEnvironment = {
+        id: snapshot.id,
+        type: snapshot.type || "definition",
+        rawType: snapshot.type || "definition",
+        title: snapshot.title || snapshot.id,
+        rawTitle: snapshot.title || snapshot.id,
+        fold: null,
+        body: snapshot.body || "",
+        filePath: snapshot.sourceFile || "",
+        start: 0,
+        end: 0,
+        calloutEnd: 0,
+        idQuotedLine: false,
+        externalId: true,
+        raw: ""
+      };
+      new ApprovalModal(this.app, this, {
+        target: syntheticEnv,
+        missingRef: { id: ref.id, displayText: ref.displayText, sourceMissingOnly: true },
+        linkContext: { editorView: view, ref }
+      }).open();
+      return;
+    }
+
+    new ApprovalModal(this.app, this, {
+      target: null,
+      missingRef: { id: ref.id, displayText: ref.displayText, sourceMissingOnly: false },
+      linkContext: { editorView: view, ref }
+    }).open();
+  }
+
+  async checkExpectedReferenceUrl(id: string): Promise<{ live: boolean; status: number; message: string; url: string }> {
+    const url = normalizeUrl(this.settings.baseUrl, id);
+    const res = await verifyLiveReference(url, { id, bustCache: true });
+    if (res.ok) {
+      return { live: true, status: res.status, message: `Live page exists at ${url}`, url };
+    }
+    if (res.status === 404 || res.kind === "not_found") {
+      return { live: false, status: 404, message: `HTTP 404 — no page is published at ${url}.`, url };
+    }
+    if (res.status === 0 || res.kind === "network_error") {
+      return { live: false, status: 0, message: `Could not reach ${url} (${res.error || "network error"}).`, url };
+    }
+    return { live: false, status: res.status, message: res.error || `HTTP ${res.status}`, url };
   }
 
   private async findCalloutAtMarkdownCursor(): Promise<CalloutEnvironment | null> {
@@ -787,13 +834,14 @@ export default class LatexReferencesPlugin extends Plugin {
 
   async checkReferenceLiveStatus(
     id: string,
-    opts: { isBackgroundPoll?: boolean; isFinalPoll?: boolean } = {}
+    opts: { isBackgroundPoll?: boolean; isFinalPoll?: boolean; silentIfUnchanged?: boolean } = {}
   ): Promise<{ live: boolean; status: number; message: string }> {
     const snapshot = getSnapshot(this.referencesManifest, id);
     if (!snapshot) {
       return { live: false, status: 0, message: "Reference snapshot not found in manifest." };
     }
 
+    const previousStatus = getReferenceStatus(this.referencesManifest, id);
     const res = await verifyLiveReference(snapshot.url, {
       id: snapshot.id,
       title: snapshot.title,
@@ -802,15 +850,23 @@ export default class LatexReferencesPlugin extends Plugin {
     });
 
     if (res.ok) {
+      const stateChanged =
+        previousStatus !== REFERENCE_STATUS.PUBLISHED ||
+        snapshot.liveUrlReachable !== true ||
+        snapshot.verifiedContentHash !== snapshot.contentHash ||
+        Boolean(snapshot.verificationError);
+
       this.referencesManifest = updateReferenceStatus(this.referencesManifest, id, REFERENCE_STATUS.PUBLISHED, {
         publishedAt: snapshot.publishedAt || new Date().toISOString(),
         verifiedContentHash: snapshot.contentHash,
         liveUrlReachable: true,
         verificationError: null
       }).manifest;
-      await this.persistData();
-      await this.syncActiveGardenrefsTex();
-      this.notifyManifestChanged();
+      if (stateChanged || !opts.silentIfUnchanged) {
+        await this.persistData();
+        await this.syncActiveGardenrefsTex();
+        this.notifyManifestChanged();
+      }
       return { live: true, status: res.status, message: `Reference is live at ${snapshot.url}` };
     }
 

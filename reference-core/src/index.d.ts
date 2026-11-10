@@ -116,3 +116,37 @@ export function verifyLiveReference(
 export function exportDigitalGardenManifest(manifest: ReferencesManifest): ReferencesManifest;
 export function exportGardenrefsTex(manifest: ReferencesManifest): string;
 export function parseDiagnostics(log: string): Array<{ file: string; line: number | null; severity: "error" | "warning"; message: string }>;
+
+export interface ParsedLatexReference {
+  id: string;
+  rawId: string;
+  displayText: string;
+  from: number;
+  to: number;
+  idFrom: number;
+  idTo: number;
+  idInnerFrom: number;
+  idInnerTo: number;
+  textFrom: number;
+  textTo: number;
+  textInnerFrom: number;
+  textInnerTo: number;
+  raw: string;
+}
+
+export function readBalancedBraceGroup(
+  text: string,
+  openBracePos: number
+): { from: number; to: number; innerFrom: number; innerTo: number; inner: string } | null;
+
+export function parseLatexReferences(text: string, macroName?: string): ParsedLatexReference[];
+export function findLatexReferenceAtPosition(
+  textOrParsed: string | ParsedLatexReference[],
+  pos: number,
+  inclusiveEnd?: boolean
+): ParsedLatexReference | null;
+export function findLatexReferenceForSelection(
+  textOrParsed: string | ParsedLatexReference[],
+  from: number,
+  to: number
+): ParsedLatexReference | null;

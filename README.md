@@ -50,25 +50,22 @@
    - Unlisted: excluded from website navigation, search index, and graph view.
    - Clickable links in compiled homework PDFs open directly to the published reference snapshot.
 
-4. **Standalone LaTeX Package (`gardenref.sty`)**:
+4. **Standalone & Overleaf-Portable LaTeX (`gardenref.sty`)**:
    - Installed globally in `~/Library/texmf/tex/latex/gardenref/gardenref.sty`.
    - Compiles anywhere without Obsidian running (command-line `latexmk`, Overleaf, CI/CD).
-   - Resolves references using local `gardenrefs.tex`.
-   - Graceful fallback: unpublished references render as plain text and emit compiler warnings.
+   - Resolves verified-live references using local `gardenrefs.tex`.
+   - Overleaf fallback via `\IfFileExists{gardenref.sty}{\usepackage{gardenref}}{}` followed by `\providecommand{\gardenref}[2]{#2}` in shared preambles renders plain text/math cleanly even when `gardenref.sty` and `gardenrefs.tex` are absent.
 
 ---
 
-## The Option + L Workflow
+## The Reference Workflow
 
 1. Open any `.tex` homework file (e.g. `MATH4281_HW8.tex`).
-2. Highlight a mathematical term (e.g., `homomorphism`).
-3. Press **Option + L (⌥ L)**:
-   - Search the definition (e.g. "Group Homomorphism").
-   - Hit Enter or click the suggestion.
-4. The term becomes `\gardenref{def-group-homomorphism}{homomorphism}`.
-5. Save/compile (`Cmd+S` or `Cmd+Enter`):
-   - PDF renders immediately with a blue clickable hyperlink.
-   - Clicking the link navigates to `https://obsidian.koltensserver.com/latex-references/def-group-homomorphism/`.
+2. Highlight a mathematical term (e.g., `homomorphism`) and press **Option + L (⌥ L)** to search and insert `\gardenref{def-group-homomorphism}{homomorphism}`.
+3. **Click any existing `\gardenref{id}{display-text}`** in the editor at any time to reopen the **Manage Reference Snapshot** modal, re-verify its live status, push updates, or click **Remove Link** to revert just that occurrence cleanly back to plain text (`Cmd+Z` undoable).
+4. Save/compile (`Cmd+S` or `Cmd+Enter`):
+   - Verified references render as clickable hyperlinks to `https://obsidian.koltensserver.com/latex-references/<id>/`.
+   - On Overleaf (or any environment without `gardenref.sty`), `\gardenref` degrades cleanly to plain text/math with zero errors or warnings.
 
 ---
 

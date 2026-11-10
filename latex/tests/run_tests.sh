@@ -85,6 +85,51 @@ grep -a "https://obsidian.koltensserver.com/latex-references/def-group-homomorph
 
 echo "✓ Preloaded hyperref compatibility passed"
 
+# 4. Overleaf / Standalone portability without gardenref.sty or gardenrefs.tex
+cat << 'EOF' > "$DIR/test_overleaf_portable.tex"
+\pdfcompresslevel=0
+\pdfobjcompresslevel=0
+\documentclass{article}
+\IfFileExists{gardenref.sty}{\usepackage{gardenref}}{}
+\providecommand{\gardenref}[2]{#2}
+\providecommand{\declaregardenref}[2]{}
+\providecommand{\setgardenrefbase}[1]{}
+\begin{document}
+Plain text: \gardenref{def-group-homomorphism}{homomorphism}.
+Math and braces: \gardenref{def-isomorphism}{$\varphi: G \to G'$ and \emph{nested \textbf{braces}} $\{a, b\}$}.
+Unknown target: \gardenref{def-nonexistent}{missing concept}.
+\end{document}
+EOF
+
+OVERLEAF_TMP="$(mktemp -d /tmp/overleaf-portable-test.XXXXXX)"
+cp "$DIR/test_overleaf_portable.tex" "$OVERLEAF_TMP/"
+(
+  cd "$OVERLEAF_TMP"
+  TEXMFHOME=/tmp/nonexistent-gardenref-texmf /Library/TeX/texbin/pdflatex -interaction=nonstopmode test_overleaf_portable.tex > test_overleaf_portable.build.log
+)
+
+if grep -E "gardenref|Digital Garden|Undefined control sequence|File .* not found" "$OVERLEAF_TMP/test_overleaf_portable.build.log" >/dev/null; then
+  echo "FAILED: Overleaf fallback log contained unexpected warnings/errors!"
+  cat "$OVERLEAF_TMP/test_overleaf_portable.build.log"
+  rm -rf "$OVERLEAF_TMP"
+  exit 1
+fi
+
+if grep -aE "def-group-homomorphism|def-isomorphism|def-nonexistent|latex-references" "$OVERLEAF_TMP/test_overleaf_portable.pdf" >/dev/null; then
+  echo "FAILED: Overleaf fallback PDF leaked reference IDs or URLs!"
+  rm -rf "$OVERLEAF_TMP"
+  exit 1
+fi
+
+if command -v gs >/dev/null 2>&1; then
+  EXTRACTED_TXT="$(gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=- "$OVERLEAF_TMP/test_overleaf_portable.pdf")"
+  echo "$EXTRACTED_TXT" | grep -q "homomorphism" || (echo "FAILED: Overleaf PDF missing display text 'homomorphism'" && rm -rf "$OVERLEAF_TMP" && exit 1)
+  echo "$EXTRACTED_TXT" | grep -q "braces" || (echo "FAILED: Overleaf PDF missing nested braces display text" && rm -rf "$OVERLEAF_TMP" && exit 1)
+  echo "$EXTRACTED_TXT" | grep -q "missing concept" || (echo "FAILED: Overleaf PDF missing unknown ref display text" && rm -rf "$OVERLEAF_TMP" && exit 1)
+fi
+rm -rf "$OVERLEAF_TMP"
+echo "✓ Overleaf standalone portability without gardenref.sty passed"
+
 # Clean up build artifacts
 rm -f "$DIR"/*.aux "$DIR"/*.log "$DIR"/*.out "$DIR"/*.pdf "$DIR"/test_*.tex "$DIR"/*.build.log
 

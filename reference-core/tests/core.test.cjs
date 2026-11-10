@@ -424,3 +424,122 @@ test('parses real vault excerpt: MATH4281 Exam 1 Cheat Sheet Group Homomorphism'
   assert.equal(envs[0].id, 'def-group-homomorphism');
   assert.match(envs[0].body, /\\varphi:G\\to G'/);
 });
+
+test('parseLatexReferences handles prose, multiple refs per line, multiline args, nested braces, math, and escapes', () => {
+  const tex = String.raw`
+A ring \gardenref{def-isomorphism}{isomorphism} preserves operations.
+Multiple on one line: \gardenref{def-group}{groups} and \gardenref{def-homomorphism}{$\varphi: G \to G'$ and \emph{nested \textbf{braces}}}.
+Escaped braces and trailing backslash: \gardenref{def-set}{set $\{a, b\}$ with 50\% and end\\}.
+Multiline argument:
+\gardenref{thm-lagrange}{
+  Lagrange's Theorem with % comment containing unbalanced { brace
+  math $H \le G$
+}
+Adjacent commands: \gardenref{def-a}{alpha}\gardenref{def-b}{beta}.
+`;
+
+  const refs = core.parseLatexReferences(tex);
+  assert.equal(refs.length, 7);
+
+  assert.equal(refs[0].id, 'def-isomorphism');
+  assert.equal(refs[0].displayText, 'isomorphism');
+  assert.equal(refs[0].raw, String.raw`\gardenref{def-isomorphism}{isomorphism}`);
+  assert.equal(tex.slice(refs[0].from, refs[0].to), refs[0].raw);
+
+  assert.equal(refs[1].id, 'def-group');
+  assert.equal(refs[1].displayText, 'groups');
+
+  assert.equal(refs[2].id, 'def-homomorphism');
+  assert.equal(refs[2].displayText, String.raw`$\varphi: G \to G'$ and \emph{nested \textbf{braces}}`);
+
+  assert.equal(refs[3].id, 'def-set');
+  assert.equal(refs[3].displayText, String.raw`set $\{a, b\}$ with 50\% and end\\`);
+  assert.equal(tex.slice(refs[3].from, refs[3].to), refs[3].raw);
+
+  assert.equal(refs[4].id, 'thm-lagrange');
+  assert.match(refs[4].displayText, /Lagrange's Theorem/);
+  assert.match(refs[4].displayText, /math \$H \\le G\$/);
+
+  assert.equal(refs[5].id, 'def-a');
+  assert.equal(refs[5].displayText, 'alpha');
+
+  assert.equal(refs[6].id, 'def-b');
+  assert.equal(refs[6].displayText, 'beta');
+  assert.equal(refs[5].to, refs[6].from);
+});
+
+test('parseLatexReferences ignores commented, escaped, incomplete, and prefix-colliding commands', () => {
+  const tex = String.raw`
+% \gardenref{def-commented}{should ignore}
+Escaped line break then literal text: \\gardenref{def-escaped}{ignore}
+Double backslash then real command: \\\gardenref{def-real}{match me}
+Different macro name: \gardenrefs{def-other}{ignore}
+Incomplete first arg: \gardenref{def-incomplete
+Incomplete second arg: \gardenref{def-onlyone}{unclosed
+Escaped percent still parses command: 50\% \gardenref{def-after-percent}{valid}
+`;
+
+  const refs = core.parseLatexReferences(tex);
+  assert.equal(refs.length, 2);
+  assert.equal(refs[0].id, 'def-real');
+  assert.equal(refs[0].displayText, 'match me');
+  assert.equal(refs[1].id, 'def-after-percent');
+  assert.equal(refs[1].displayText, 'valid');
+});
+
+test('findLatexReferenceAtPosition and findLatexReferenceForSelection resolve cursor/partial selection accurately', () => {
+  const tex = String.raw`Before \gardenref{def-isomorphism}{$\varphi$ iso} after`;
+  const refs = core.parseLatexReferences(tex);
+  assert.equal(refs.length, 1);
+  const r = refs[0];
+
+  // Cursor inside ID arg or display-text arg
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.idInnerFrom + 2)?.id, 'def-isomorphism');
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.textInnerFrom + 1)?.id, 'def-isomorphism');
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.from)?.id, 'def-isomorphism');
+
+  // Strict exclusive end vs inclusive end
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.to, false), null);
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.to, true)?.id, 'def-isomorphism');
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.to + 1, true), null);
+  assert.equal(core.findLatexReferenceAtPosition(refs, r.from - 1, true), null);
+
+  // Partial selection inside second argument or whole command resolves ref
+  assert.equal(core.findLatexReferenceForSelection(refs, r.textInnerFrom, r.textInnerFrom + 5)?.id, 'def-isomorphism');
+  assert.equal(core.findLatexReferenceForSelection(refs, r.from, r.to)?.id, 'def-isomorphism');
+
+  // Selection spanning outside command does not false-match
+  assert.equal(core.findLatexReferenceForSelection(refs, 0, r.textInnerTo), null);
+});
+
+test('getReferenceStatus rejects published label when publishedAt is missing or liveUrlReachable is false', () => {
+  const base = core.createEmptyManifest('https://obsidian.koltensserver.com');
+  base.references['def-no-date'] = {
+    id: 'def-no-date',
+    type: 'definition',
+    title: 'Missing Date',
+    body: 'Body',
+    sourceFile: 'a.md',
+    approvedAt: new Date().toISOString(),
+    url: 'https://obsidian.koltensserver.com/latex-references/def-no-date/',
+    contentHash: 'abc',
+    status: core.REFERENCE_STATUS.PUBLISHED,
+    publishedAt: null
+  };
+  assert.equal(core.getReferenceStatus(base, 'def-no-date'), core.REFERENCE_STATUS.APPROVED_LOCAL);
+
+  base.references['def-dead-url'] = {
+    id: 'def-dead-url',
+    type: 'definition',
+    title: 'Dead URL',
+    body: 'Body',
+    sourceFile: 'a.md',
+    approvedAt: new Date().toISOString(),
+    url: 'https://obsidian.koltensserver.com/latex-references/def-dead-url/',
+    contentHash: 'abc',
+    status: core.REFERENCE_STATUS.PUBLISHED,
+    publishedAt: new Date().toISOString(),
+    liveUrlReachable: false
+  };
+  assert.equal(core.getReferenceStatus(base, 'def-dead-url'), core.REFERENCE_STATUS.DEPLOY_FAILED);
+});

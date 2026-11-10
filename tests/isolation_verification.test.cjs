@@ -223,3 +223,77 @@ test('Independence 7: Deleted targets in vault preserve frozen manifest snapshot
   const texDef = core.exportGardenrefsTex(m1);
   assert.match(texDef, /\\declaregardenref\{thm-spectral-theorem\}/);
 });
+
+test('Independence 8: Overleaf / standalone compilation of real HW8 + preamble works WITH and WITHOUT gardenref.sty', () => {
+  const HW_ORIGINAL_DIR = '/Users/koltenbendickson/Library/Mobile Documents/iCloud~md~obsidian/Documents/The Vault/School/Fall 2026/Introduction to Modern Algebra/LaTeX';
+  const PORTABLE_LOCAL_DIR = '/tmp/latex-ref-portable-local-test';
+  const PORTABLE_OVERLEAF_DIR = '/tmp/latex-ref-portable-overleaf-test';
+
+  for (const dir of [PORTABLE_LOCAL_DIR, PORTABLE_OVERLEAF_DIR]) {
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(path.join(HW_ORIGINAL_DIR, 'MATH4281_HW8.tex'), path.join(dir, 'MATH4281_HW8.tex'));
+    fs.cpSync(path.join(HW_ORIGINAL_DIR, 'preamble'), path.join(dir, 'preamble'), { recursive: true });
+    if (fs.existsSync(path.join(HW_ORIGINAL_DIR, 'figures'))) {
+      fs.cpSync(path.join(HW_ORIGINAL_DIR, 'figures'), path.join(dir, 'figures'), { recursive: true });
+    }
+    let hw8 = fs.readFileSync(path.join(dir, 'MATH4281_HW8.tex'), 'utf8');
+    // Prepend uncompressed PDF flags so we can inspect rendered PDF text/links deterministically
+    hw8 = '\\pdfcompresslevel=0\\pdfobjcompresslevel=0\n' +
+      hw8.replace(
+        'An \\emph{automorphism} of a ring $R$ is an isomorphism',
+        'An \\emph{automorphism} of a ring $R$ is an \\gardenref{def-isomorphism}{isomorphism} preserving \\gardenref{def-ring-homomorphisms}{$\\varphi: R \\to R$ and \\emph{nested \\textbf{braces}} $\\{a, b\\}$}'
+      );
+    fs.writeFileSync(path.join(dir, 'MATH4281_HW8.tex'), hw8, 'utf8');
+  }
+
+  // Mode A: Local compilation WITH gardenref.sty and gardenrefs.tex -> clickable URI links
+  fs.copyFileSync(LATEX_PACKAGE, path.join(PORTABLE_LOCAL_DIR, 'gardenref.sty'));
+  fs.writeFileSync(
+    path.join(PORTABLE_LOCAL_DIR, 'gardenrefs.tex'),
+    '\\declaregardenref{def-isomorphism}{https://obsidian.koltensserver.com/latex-references/def-isomorphism/}\n' +
+    '\\declaregardenref{def-ring-homomorphisms}{https://obsidian.koltensserver.com/latex-references/def-ring-homomorphisms/}\n',
+    'utf8'
+  );
+  execFileSync('/Library/TeX/texbin/latexmk', ['-pdf', '-interaction=nonstopmode', 'MATH4281_HW8.tex'], {
+    cwd: PORTABLE_LOCAL_DIR,
+    encoding: 'utf8',
+    env: { PATH: '/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin' }
+  });
+  const localPdf = fs.readFileSync(path.join(PORTABLE_LOCAL_DIR, 'MATH4281_HW8.pdf'), 'utf8');
+  assert.match(localPdf, /https:\/\/obsidian\.koltensserver\.com\/latex-references\/def-isomorphism\//);
+  assert.match(localPdf, /https:\/\/obsidian\.koltensserver\.com\/latex-references\/def-ring-homomorphisms\//);
+
+  // Mode B: Simulated Overleaf compilation WITHOUT gardenref.sty or gardenrefs.tex (and isolated empty TEXMFHOME)
+  assert.equal(fs.existsSync(path.join(PORTABLE_OVERLEAF_DIR, 'gardenref.sty')), false);
+  assert.equal(fs.existsSync(path.join(PORTABLE_OVERLEAF_DIR, 'gardenrefs.tex')), false);
+  execFileSync('/Library/TeX/texbin/latexmk', ['-pdf', '-interaction=nonstopmode', 'MATH4281_HW8.tex'], {
+    cwd: PORTABLE_OVERLEAF_DIR,
+    encoding: 'utf8',
+    env: {
+      PATH: '/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
+      TEXMFHOME: '/tmp/nonexistent-overleaf-texmf'
+    }
+  });
+  const overleafLog = fs.readFileSync(path.join(PORTABLE_OVERLEAF_DIR, 'MATH4281_HW8.log'), 'utf8');
+  assert.doesNotMatch(overleafLog, /Undefined control sequence/i);
+  assert.doesNotMatch(overleafLog, /File `gardenref\.sty' not found/i);
+  assert.doesNotMatch(overleafLog, /Digital Garden/i);
+
+  const overleafPdf = fs.readFileSync(path.join(PORTABLE_OVERLEAF_DIR, 'MATH4281_HW8.pdf'), 'utf8');
+  assert.doesNotMatch(overleafPdf, /def-isomorphism/);
+  assert.doesNotMatch(overleafPdf, /def-ring-homomorphisms/);
+  assert.doesNotMatch(overleafPdf, /latex-references/);
+
+  // Extract rendered PDF text using Ghostscript txtwrite to verify display text & nested braces intact
+  const extractedText = execFileSync('/usr/local/bin/gs', [
+    '-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=txtwrite', '-sOutputFile=-',
+    path.join(PORTABLE_OVERLEAF_DIR, 'MATH4281_HW8.pdf')
+  ], { encoding: 'utf8' });
+  assert.match(extractedText, /isomorphism/);
+  assert.match(extractedText, /braces/);
+  assert.match(extractedText, /\{a,\s*b\}/);
+
+  fs.rmSync(PORTABLE_LOCAL_DIR, { recursive: true, force: true });
+  fs.rmSync(PORTABLE_OVERLEAF_DIR, { recursive: true, force: true });
+});

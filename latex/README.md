@@ -12,6 +12,30 @@ A standalone, zero-dependency LaTeX package that turns mathematical definitions,
 
 ## Usage
 
+### Portable / Overleaf-Safe Preamble (Recommended)
+
+Use `\IfFileExists{gardenref.sty}` near the end of your preamble (where `hyperref` belongs) so documents compile seamlessly both inside Obsidian (with clickable PDF links) and on Overleaf or any TeX system without `gardenref.sty` installed (rendering plain text/math cleanly with zero warnings):
+
+```latex
+% Place near the end of your preamble
+\IfFileExists{gardenref.sty}{\usepackage{gardenref}}{}
+\providecommand{\gardenref}[2]{#2}
+\providecommand{\declaregardenref}[2]{}
+\providecommand{\setgardenrefbase}[1]{}
+```
+
+### Standalone Preamble Snippet (Unrelated Overleaf Templates)
+
+If you copy a paragraph containing `\gardenref{id}{display-text}` into a completely separate Overleaf document that does not use your shared `preamble.tex`, add this single line anywhere in that document's preamble:
+
+```latex
+\providecommand{\gardenref}[2]{#2}
+```
+
+> **Note:** In LaTeX, a raw document body pasted without any preamble definition cannot define unknown macros automatically — either keep the portable `preamble.tex` block above or include `\providecommand{\gardenref}[2]{#2}` in the target preamble.
+
+### Direct Package Usage (When `gardenref.sty` Is Guaranteed Available)
+
 ```latex
 \documentclass{article}
 \usepackage{gardenref}

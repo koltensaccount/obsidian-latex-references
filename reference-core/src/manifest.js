@@ -218,6 +218,12 @@ function getReferenceStatus(manifest, id) {
   }
 
   if (rawStatus === REFERENCE_STATUS.PUBLISHED) {
+    if (snapshot.liveUrlReachable === false) {
+      return REFERENCE_STATUS.DEPLOY_FAILED;
+    }
+    if (!snapshot.publishedAt) {
+      return REFERENCE_STATUS.APPROVED_LOCAL;
+    }
     if (snapshot.verifiedContentHash && snapshot.contentHash && snapshot.verifiedContentHash !== snapshot.contentHash) {
       return REFERENCE_STATUS.APPROVED_LOCAL;
     }
